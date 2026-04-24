@@ -1,0 +1,20 @@
+symbol: BTC/USDT
+timeframe: 1m
+exchange_id: binance
+db_path: dynogrid.sqlite3
+
+grid_count: 3
+atr_multiplier: 1.2
+order_size: 0.001
+max_inventory: 0.01
+maker_fee_rate: 0.001
+stop_loss_pct: 0.10
+
+starting_base: 0.0
+starting_quote: 1000.0
+
+price_precision: 2
+quantity_precision: 6
+min_price: 1.0
+min_quantity: 0.0001
+loop_interval_seconds: 60
