@@ -14,7 +14,7 @@ from dynogrid.cli import build_parser
 from dynogrid.config import load_config
 from dynogrid.engine import DynoGridEngine
 from dynogrid.exchange.paper import PaperExchangeGateway
-from dynogrid.models import Balance, Candle, Fill, Order, OrderStatus, Side
+from dynogrid.models import Balance, Bias, Candle, Fill, GridState, Order, OrderStatus, Side
 from dynogrid.persistence.sqlite import SQLiteRepository
 
 
@@ -25,6 +25,20 @@ class BlockingMarketDataSource:
     async def next_candle(self) -> Candle | None:
         await asyncio.Event().wait()
         return None
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+class ListMarketDataSource:
+    def __init__(self, candles: list[Candle]) -> None:
+        self.candles = candles
+        self.closed = False
+
+    async def next_candle(self) -> Candle | None:
+        if not self.candles:
+            return None
+        return self.candles.pop(0)
 
     async def close(self) -> None:
         self.closed = True
@@ -65,6 +79,29 @@ async def test_sqlite_round_trip_for_core_tables(tmp_path: Path) -> None:
     candle = Candle(1, 100.0, 101.0, 99.0, 100.0, 1.0)
     await repo.persist_candle(run_id, config.symbol, candle)
     await repo.persist_balance(run_id, 1, Balance(0.0, 1000.0), 1000.0)
+    await repo.persist_strategy_metrics(
+        run_id,
+        1,
+        GridState(
+            center_price=100.0,
+            spacing=1.0,
+            bias=Bias.NEUTRAL,
+            current_inventory=0.0,
+            max_inventory=0.03,
+            buy_spacing=1.0,
+            sell_spacing=1.0,
+            effective_atr=1.0,
+            atr_fast=0.8,
+            atr_slow=1.0,
+            volatility_ratio=1.0,
+            ev_min_spacing=0.5,
+            ev_positive=True,
+            inventory_ratio=0.0,
+            inventory_skew_cost_quote=0.0,
+            trend_state="neutral",
+        ),
+        "",
+    )
     await repo.persist_order(
         run_id,
         Order(
@@ -97,6 +134,7 @@ async def test_sqlite_round_trip_for_core_tables(tmp_path: Path) -> None:
     await repo.event(run_id, "test", "event")
     latest_balance = await repo.latest_balance(run_id)
     latest_snapshot = await repo.latest_snapshot(run_id)
+    latest_metrics = await repo.latest_strategy_metrics(run_id)
     latest_events = await repo.latest_events(run_id, 5)
     watch = await repo.watch_snapshot(run_id)
 
@@ -107,10 +145,12 @@ async def test_sqlite_round_trip_for_core_tables(tmp_path: Path) -> None:
     assert fills[0]["client_order_id"] == "open-buy"
     assert latest_balance["equity"] == 1000.0
     assert latest_snapshot is None
+    assert latest_metrics["ev_positive"] == 1
     assert latest_events[0]["message"] == "event"
     assert watch["run"]["id"] == run_id
     assert watch["balance"]["equity"] == 1000.0
     assert watch["orders"][0]["client_order_id"] == "open-buy"
+    assert watch["metrics"]["trend_state"] == "neutral"
 
 
 @pytest.mark.asyncio
@@ -140,6 +180,49 @@ async def test_engine_cancellation_marks_run_stopped(tmp_path: Path) -> None:
     assert market_data.closed is True
 
 
+@pytest.mark.asyncio
+async def test_engine_stop_loss_auto_flattens_and_stops_run(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path)
+    payload = yaml.safe_load(config_path.read_text())
+    payload["starting_base"] = 1.0
+    payload["starting_quote"] = 0.0
+    payload["max_inventory"] = 2.0
+    payload["order_size"] = 0.1
+    payload["stop_loss_pct"] = 0.10
+    config_path.write_text(yaml.safe_dump(payload))
+    config = load_config(config_path)
+    repo = SQLiteRepository(config.db_path)
+    await repo.init()
+    run_id = await repo.create_run("live-paper", config)
+    initial = [
+        Candle(1700000000 + index * 60, 100.0, 105.0, 95.0, 100.0, 1.0)
+        for index in range(20)
+    ]
+    market_data = ListMarketDataSource(
+        [
+            Candle(1700001200, 100.0, 101.0, 99.0, 100.0, 1.0),
+            Candle(1700001260, 80.0, 81.0, 79.0, 80.0, 1.0),
+        ]
+    )
+    engine = DynoGridEngine(
+        config_path=config_path,
+        repository=repo,
+        gateway=PaperExchangeGateway(config),
+        market_data=market_data,
+        run_id=run_id,
+        initial_candles=initial,
+    )
+
+    await engine.run()
+    status = await repo.latest_status()
+    fills = await repo.list_fills(run_id, 10)
+    events = await repo.latest_events(run_id, 10)
+
+    assert status["run"]["status"] == "stopped"
+    assert any(fill["client_order_id"] == "paper-flatten" for fill in fills)
+    assert any(event["event_type"] == "paper_stop_loss" for event in events)
+
+
 def test_cli_parser_accepts_watch_refresh() -> None:
     args = build_parser().parse_args(
         ["--config", "config.yaml", "run-live-paper", "--watch", "--refresh", "2"]
@@ -161,6 +244,7 @@ def test_cli_config_check_and_backtest_smoke(tmp_path: Path) -> None:
         text=True,
     )
     assert "Config OK" in config_check.stdout
+    assert "recenter_hysteresis_pct" in config_check.stdout
 
     backtest = subprocess.run(
         [
@@ -207,6 +291,7 @@ def test_cli_config_check_and_backtest_smoke(tmp_path: Path) -> None:
     )
     assert f"Run {run_id} backtest finished" in performance.stdout
     assert "pnl=" in performance.stdout
+    assert "ev_pauses=" in performance.stdout
 
     orders = subprocess.run(
         [

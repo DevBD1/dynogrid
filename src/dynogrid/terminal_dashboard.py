@@ -37,7 +37,7 @@ async def render_dashboard(repository: SQLiteRepository, run_id: int) -> Group:
     return Group(
         _header(data),
         _balance_panel(data.get("balance")),
-        _strategy_panel(data.get("snapshot")),
+        _strategy_panel(data.get("snapshot"), data.get("metrics")),
         _orders_panel(data.get("orders", [])),
         _fills_panel(data.get("fills", [])),
         _process_panel(data),
@@ -73,9 +73,19 @@ def _balance_panel(balance: dict[str, Any] | None) -> Panel:
     return Panel(table, title="Live Balances")
 
 
-def _strategy_panel(snapshot: dict[str, Any] | None) -> Panel:
+def _strategy_panel(
+    snapshot: dict[str, Any] | None, metrics: dict[str, Any] | None
+) -> Panel:
     table = Table(box=box.SIMPLE, expand=True)
-    for column in ("last_candle", "bias", "center", "spacing", "desired", "inventory"):
+    for column in (
+        "last_candle",
+        "bias",
+        "center",
+        "spacing",
+        "trend",
+        "ev",
+        "skew_cost",
+    ):
         table.add_column(column)
     if snapshot:
         table.add_row(
@@ -83,11 +93,12 @@ def _strategy_panel(snapshot: dict[str, Any] | None) -> Panel:
             str(snapshot["bias"]),
             _money(snapshot["center_price"]),
             _money(snapshot["spacing"]),
-            str(snapshot["desired_order_count"]),
-            _qty(snapshot["inventory"]),
+            str(metrics["trend_state"]) if metrics else "-",
+            str(bool(metrics["ev_positive"])) if metrics else "-",
+            _qty(metrics["inventory_skew_cost_quote"]) if metrics else "-",
         )
     else:
-        table.add_row("waiting", "-", "-", "-", "-", "-")
+        table.add_row("waiting", "-", "-", "-", "-", "-", "-")
     return Panel(table, title="Strategy")
 
 
@@ -141,6 +152,12 @@ def _process_panel(data: dict[str, Any]) -> Panel:
     table.add_row("filled_orders", str(order_counts.get("filled", 0)))
     table.add_row("canceled_orders", str(order_counts.get("canceled", 0)))
     table.add_row("fills", str(data.get("fill_count", 0)))
+    metrics = data.get("metrics")
+    if metrics:
+        table.add_row("volatility_ratio", f"{float(metrics['volatility_ratio']):.4f}")
+        table.add_row("buy_spacing", _money(metrics["buy_spacing"]))
+        table.add_row("sell_spacing", _money(metrics["sell_spacing"]))
+        table.add_row("exit_signal", str(metrics["exit_signal"] or "-"))
     if events:
         latest = events[0]
         table.add_row("latest_event", f"{latest['event_type']}: {latest['message']}")

@@ -81,7 +81,20 @@ async def _run(args: argparse.Namespace) -> None:
             f"symbol={config.symbol} timeframe={config.timeframe} "
             f"db={config.db_path} hash={config_hash(config)}\n"
             f"grid_count={config.grid_count} atr_multiplier={config.atr_multiplier} "
-            f"order_size={config.order_size}",
+            f"order_size={config.order_size}\n"
+            f"recenter_hysteresis_pct={config.recenter_hysteresis_pct} "
+            f"atr_fast_period={config.atr_fast_period} atr_slow_period={config.atr_slow_period}\n"
+            f"taker_fee_rate={config.taker_fee_rate} "
+            f"simulated_slippage_bps={config.simulated_slippage_bps} "
+            f"ev_safety_multiplier={config.ev_safety_multiplier} "
+            f"max_ev_spacing_pct={config.max_ev_spacing_pct}\n"
+            f"bias_mode={config.bias_mode} ema_fast_period={config.ema_fast_period} "
+            f"ema_slow_period={config.ema_slow_period} "
+            f"outside_band_consecutive={config.outside_band_consecutive}\n"
+            f"structure_lookback={config.structure_lookback} "
+            f"structure_break_atr_buffer={config.structure_break_atr_buffer} "
+            f"inventory_spacing_threshold={config.inventory_spacing_threshold} "
+            f"inventory_spacing_max_multiplier={config.inventory_spacing_max_multiplier}",
         )
         return
 
@@ -232,6 +245,7 @@ def _format_status(status: dict[str, Any]) -> str:
     run = status.get("run") or {}
     balance = status.get("balance") or {}
     snapshot = status.get("snapshot") or {}
+    metrics = status.get("metrics") or {}
     if not run:
         return "No runs found."
     lines = [
@@ -248,6 +262,16 @@ def _format_status(status: dict[str, Any]) -> str:
             "last_candle={timestamp} bias={bias} center={center_price:.2f} "
             "spacing={spacing:.2f} desired_orders={desired_order_count}".format(**snapshot)
         )
+    if metrics:
+        metric_values = dict(metrics)
+        metric_values["ev_positive"] = bool(metrics["ev_positive"])
+        lines.append(
+            "ev_positive={ev_positive} trend={trend_state} volatility_ratio={volatility_ratio:.4f} "
+            "buy_spacing={buy_spacing:.2f} sell_spacing={sell_spacing:.2f} "
+            "skew_cost={inventory_skew_cost_quote:.8f} exit_signal={exit_signal}".format(
+                **metric_values,
+            )
+        )
     return "\n".join(lines)
 
 
@@ -255,6 +279,7 @@ def _format_performance(performance: dict[str, Any]) -> str:
     run = performance["run"]
     fills = performance.get("fills", {})
     orders = performance.get("orders", {})
+    metrics = performance.get("metrics", {})
     last_balance = performance.get("last_balance") or {}
     return "\n".join(
         [
@@ -274,6 +299,12 @@ def _format_performance(performance: dict[str, Any]) -> str:
                 total_fees=float(fills.get("total_fees", 0.0)),
             ),
             f"orders={orders}",
+            "ev_pauses={ev_pause_count} stop_events={stop_events} "
+            "skew_cost={skew_cost:.8f}".format(
+                ev_pause_count=int(metrics.get("ev_pause_count", 0)),
+                stop_events=int(metrics.get("stop_events", 0)),
+                skew_cost=float(metrics.get("skew_cost", 0.0)),
+            ),
             "last_balance base_free={base_free:.8f} quote_free={quote_free:.2f} "
             "base_locked={base_locked:.8f} quote_locked={quote_locked:.2f}".format(
                 **last_balance

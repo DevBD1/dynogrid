@@ -129,6 +129,43 @@ class SQLiteRepository:
             )
             await db.commit()
 
+    async def persist_strategy_metrics(
+        self,
+        run_id: int,
+        timestamp: int,
+        grid: GridState,
+        exit_signal: str,
+    ) -> None:
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute(
+                """
+                INSERT INTO strategy_metrics(
+                    run_id, timestamp, effective_atr, atr_fast, atr_slow,
+                    volatility_ratio, ev_min_spacing, ev_positive, buy_spacing,
+                    sell_spacing, inventory_ratio, inventory_skew_cost_quote,
+                    grid_recentered, trend_state, exit_signal
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    run_id,
+                    timestamp,
+                    grid.effective_atr,
+                    grid.atr_fast,
+                    grid.atr_slow,
+                    grid.volatility_ratio,
+                    grid.ev_min_spacing,
+                    int(grid.ev_positive),
+                    grid.buy_spacing,
+                    grid.sell_spacing,
+                    grid.inventory_ratio,
+                    grid.inventory_skew_cost_quote,
+                    int(grid.grid_recentered),
+                    grid.trend_state,
+                    exit_signal,
+                ),
+            )
+            await db.commit()
+
     async def persist_order(self, run_id: int, order: Order) -> None:
         async with aiosqlite.connect(self.path) as db:
             await db.execute(
@@ -313,6 +350,22 @@ class SQLiteRepository:
             row = await cursor.fetchone()
         return dict(row) if row else None
 
+    async def latest_strategy_metrics(self, run_id: int) -> dict[str, object] | None:
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                """
+                SELECT *
+                FROM strategy_metrics
+                WHERE run_id = ?
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (run_id,),
+            )
+            row = await cursor.fetchone()
+        return dict(row) if row else None
+
     async def latest_events(
         self, run_id: int, limit: int = 5
     ) -> list[dict[str, object]]:
@@ -363,6 +416,7 @@ class SQLiteRepository:
             "run": dict(run),
             "balance": await self.latest_balance(run_id),
             "snapshot": await self.latest_snapshot(run_id),
+            "metrics": await self.latest_strategy_metrics(run_id),
             "orders": await self.list_orders(run_id, "open"),
             "fills": await self.list_fills(run_id, 10),
             "events": await self.latest_events(run_id, 5),
@@ -384,6 +438,16 @@ class SQLiteRepository:
                 "SELECT * FROM strategy_snapshots ORDER BY id DESC LIMIT 1"
             )
             snapshot = await snapshot_cursor.fetchone()
+            metrics_cursor = await db.execute(
+                """
+                SELECT *
+                FROM strategy_metrics
+                WHERE run_id = (SELECT id FROM runs ORDER BY id DESC LIMIT 1)
+                ORDER BY id DESC
+                LIMIT 1
+                """
+            )
+            metrics = await metrics_cursor.fetchone()
             order_cursor = await db.execute(
                 """
                 SELECT COUNT(*) AS count
@@ -402,6 +466,7 @@ class SQLiteRepository:
             "run": dict(run) if run else None,
             "balance": dict(balance) if balance else None,
             "snapshot": dict(snapshot) if snapshot else None,
+            "metrics": dict(metrics) if metrics else None,
             "open_orders": int(open_orders["count"]) if open_orders else 0,
             "paused": paused == "1",
         }
@@ -473,6 +538,19 @@ class SQLiteRepository:
             )
             snapshots = await snapshot_cursor.fetchone()
 
+            metrics_cursor = await db.execute(
+                """
+                SELECT
+                    COALESCE(SUM(CASE WHEN ev_positive = 0 THEN 1 ELSE 0 END), 0) AS ev_pause_count,
+                    COALESCE(SUM(inventory_skew_cost_quote), 0) AS skew_cost,
+                    COALESCE(SUM(CASE WHEN exit_signal != '' THEN 1 ELSE 0 END), 0) AS stop_events
+                FROM strategy_metrics
+                WHERE run_id = ?
+                """,
+                (run_id,),
+            )
+            metrics = await metrics_cursor.fetchone()
+
         start_equity = float(first_balance["equity"]) if first_balance else 0.0
         end_equity = float(last_balance["equity"]) if last_balance else 0.0
         pnl = end_equity - start_equity
@@ -497,6 +575,7 @@ class SQLiteRepository:
             "fills": dict(fills) if fills else {},
             "orders": {row["status"]: int(row["count"]) for row in order_rows},
             "last_balance": dict(last_balance) if last_balance else None,
+            "metrics": dict(metrics) if metrics else {},
         }
 
 
@@ -547,6 +626,25 @@ CREATE TABLE IF NOT EXISTS strategy_snapshots (
     max_inventory REAL NOT NULL,
     risk_json TEXT NOT NULL,
     desired_order_count INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS strategy_metrics (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL,
+    timestamp INTEGER NOT NULL,
+    effective_atr REAL NOT NULL,
+    atr_fast REAL NOT NULL,
+    atr_slow REAL NOT NULL,
+    volatility_ratio REAL NOT NULL,
+    ev_min_spacing REAL NOT NULL,
+    ev_positive INTEGER NOT NULL,
+    buy_spacing REAL NOT NULL,
+    sell_spacing REAL NOT NULL,
+    inventory_ratio REAL NOT NULL,
+    inventory_skew_cost_quote REAL NOT NULL,
+    grid_recentered INTEGER NOT NULL,
+    trend_state TEXT NOT NULL,
+    exit_signal TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS orders (

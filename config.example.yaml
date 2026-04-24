@@ -8,7 +8,23 @@ atr_multiplier: 1.2
 order_size: 0.001
 max_inventory: 0.01
 maker_fee_rate: 0.001
+taker_fee_rate: 0.001
 stop_loss_pct: 0.10
+simulated_slippage_bps: 1.0
+ev_safety_multiplier: 1.10
+max_ev_spacing_pct: 0.02
+
+recenter_hysteresis_pct: 0.001
+atr_fast_period: 7
+atr_slow_period: 28
+bias_mode: auto
+ema_fast_period: 9
+ema_slow_period: 21
+outside_band_consecutive: 3
+structure_lookback: 20
+structure_break_atr_buffer: 0.25
+inventory_spacing_threshold: 0.70
+inventory_spacing_max_multiplier: 1.0
 
 starting_base: 0.0
 starting_quote: 1000.0

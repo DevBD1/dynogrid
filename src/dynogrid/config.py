@@ -51,6 +51,21 @@ def parse_config(raw: dict[str, Any]) -> BotConfig:
         min_quantity=float(raw.get("min_quantity", 0.0)),
         stop_loss_pct=float(raw.get("stop_loss_pct", 0.10)),
         loop_interval_seconds=int(raw.get("loop_interval_seconds", 60)),
+        recenter_hysteresis_pct=float(raw.get("recenter_hysteresis_pct", 0.001)),
+        atr_fast_period=int(raw.get("atr_fast_period", 7)),
+        atr_slow_period=int(raw.get("atr_slow_period", 28)),
+        taker_fee_rate=float(raw.get("taker_fee_rate", raw.get("maker_fee_rate", 0.001))),
+        simulated_slippage_bps=float(raw.get("simulated_slippage_bps", 1.0)),
+        ev_safety_multiplier=float(raw.get("ev_safety_multiplier", 1.10)),
+        max_ev_spacing_pct=float(raw.get("max_ev_spacing_pct", 0.02)),
+        bias_mode=str(raw.get("bias_mode", "auto")),
+        ema_fast_period=int(raw.get("ema_fast_period", 9)),
+        ema_slow_period=int(raw.get("ema_slow_period", 21)),
+        outside_band_consecutive=int(raw.get("outside_band_consecutive", 3)),
+        structure_lookback=int(raw.get("structure_lookback", 20)),
+        structure_break_atr_buffer=float(raw.get("structure_break_atr_buffer", 0.25)),
+        inventory_spacing_threshold=float(raw.get("inventory_spacing_threshold", 0.70)),
+        inventory_spacing_max_multiplier=float(raw.get("inventory_spacing_max_multiplier", 1.0)),
     )
     validate_config(config)
     return config
@@ -75,6 +90,32 @@ def validate_config(config: BotConfig) -> None:
         raise ValueError("stop_loss_pct must be between 0 and 1")
     if config.price_precision < 0 or config.quantity_precision < 0:
         raise ValueError("precision values must be >= 0")
+    if config.recenter_hysteresis_pct < 0:
+        raise ValueError("recenter_hysteresis_pct must be >= 0")
+    if config.atr_fast_period < 1 or config.atr_slow_period < 1:
+        raise ValueError("ATR periods must be >= 1")
+    if config.taker_fee_rate < 0:
+        raise ValueError("taker_fee_rate must be >= 0")
+    if config.simulated_slippage_bps < 0:
+        raise ValueError("simulated_slippage_bps must be >= 0")
+    if config.ev_safety_multiplier <= 0:
+        raise ValueError("ev_safety_multiplier must be > 0")
+    if config.max_ev_spacing_pct <= 0:
+        raise ValueError("max_ev_spacing_pct must be > 0")
+    if config.bias_mode not in {"auto", "mean_reversion", "trend_following"}:
+        raise ValueError("bias_mode must be auto, mean_reversion, or trend_following")
+    if config.ema_fast_period < 1 or config.ema_slow_period < 1:
+        raise ValueError("EMA periods must be >= 1")
+    if config.outside_band_consecutive < 1:
+        raise ValueError("outside_band_consecutive must be >= 1")
+    if config.structure_lookback < 2:
+        raise ValueError("structure_lookback must be >= 2")
+    if config.structure_break_atr_buffer < 0:
+        raise ValueError("structure_break_atr_buffer must be >= 0")
+    if not 0 <= config.inventory_spacing_threshold <= 1:
+        raise ValueError("inventory_spacing_threshold must be between 0 and 1")
+    if config.inventory_spacing_max_multiplier < 0:
+        raise ValueError("inventory_spacing_max_multiplier must be >= 0")
 
 
 def config_hash(config: BotConfig) -> str:

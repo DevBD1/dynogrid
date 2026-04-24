@@ -21,6 +21,7 @@ from dynogrid.strategy.grid import (
     compute_risk_state,
     generate_desired_orders,
     mark_equity,
+    structural_exit_signal,
 )
 from dynogrid.strategy.indicators import calculate_indicators
 from dynogrid.strategy.reconcile import diff_orders
@@ -48,6 +49,7 @@ class DynoGridEngine:
         self._previous_center: float | None = None
         self._starting_equity: float | None = None
         self._stop_event_written = False
+        self._ev_event_written = False
         self._reporter = reporter
 
     async def run(self, max_cycles: int | None = None, sleep: bool = False) -> None:
@@ -96,7 +98,13 @@ class DynoGridEngine:
                     await self._maybe_sleep(config.loop_interval_seconds, sleep)
                     continue
 
-                indicators = calculate_indicators(self._candles)
+                indicators = calculate_indicators(
+                    self._candles,
+                    atr_fast_period=config.atr_fast_period,
+                    atr_slow_period=config.atr_slow_period,
+                    ema_fast_period=config.ema_fast_period,
+                    ema_slow_period=config.ema_slow_period,
+                )
                 balance = await self.gateway.balance()
                 grid, fee_barrier_applied = build_grid_state(
                     config=config,
@@ -108,6 +116,12 @@ class DynoGridEngine:
                 self._previous_center = grid.center_price
 
                 paused = await self.repository.runtime_state("paused", "0") == "1"
+                exit_signal = structural_exit_signal(config, self._candles, indicators, balance)
+                equity = mark_equity(balance, candle.close)
+                if self._starting_equity is not None and equity < self._starting_equity * (
+                    1.0 - config.stop_loss_pct
+                ):
+                    exit_signal = "paper_stop_loss"
                 risk = compute_risk_state(
                     config=config,
                     balance=balance,
@@ -115,6 +129,9 @@ class DynoGridEngine:
                     starting_equity=self._starting_equity,
                     paused=paused,
                     fee_barrier_applied=fee_barrier_applied,
+                    ev_positive=grid.ev_positive,
+                    trend_state=grid.trend_state,
+                    exit_signal=exit_signal,
                 )
                 if risk.paper_stop_loss_breached and not self._stop_event_written:
                     await self.repository.event(
@@ -124,8 +141,21 @@ class DynoGridEngine:
                         {"equity": mark_equity(balance, candle.close)},
                     )
                     self._stop_event_written = True
+                if not grid.ev_positive and not self._ev_event_written:
+                    await self.repository.event(
+                        self.run_id,
+                        "ev_pause",
+                        "EV minimum spacing exceeds configured cap; entries paused",
+                        {
+                            "ev_min_spacing": grid.ev_min_spacing,
+                            "max_spacing": candle.close * config.max_ev_spacing_pct,
+                        },
+                    )
+                    self._ev_event_written = True
 
                 desired = generate_desired_orders(config, grid, risk, balance)
+                if exit_signal:
+                    desired = []
                 open_orders = await self.gateway.open_orders()
                 plan = diff_orders(open_orders, desired)
 
@@ -164,6 +194,9 @@ class DynoGridEngine:
                         ),
                     )
 
+                if exit_signal:
+                    await self._cancel_all_and_flatten(candle, exit_signal)
+
                 balance = await self.gateway.balance()
                 equity = mark_equity(balance, candle.close)
                 await self.repository.persist_snapshot(
@@ -174,6 +207,12 @@ class DynoGridEngine:
                     grid=grid,
                     risk=risk,
                     desired_count=len(desired),
+                )
+                await self.repository.persist_strategy_metrics(
+                    run_id=self.run_id,
+                    timestamp=candle.timestamp,
+                    grid=grid,
+                    exit_signal=exit_signal,
                 )
                 await self.repository.persist_balance(
                     self.run_id,
@@ -189,8 +228,12 @@ class DynoGridEngine:
                     f"spacing={grid.spacing:.2f} desired={len(desired)} "
                     f"created={len(plan.create_orders)} canceled={len(plan.cancel_order_ids)} "
                     f"fills={len(fills)} open={len(await self.gateway.open_orders())} "
-                    f"equity={equity:.2f}"
+                    f"equity={equity:.2f} trend={grid.trend_state} ev={grid.ev_positive}"
                 )
+                if exit_signal:
+                    await self.repository.finish_run(self.run_id, "stopped")
+                    self._report(f"run {self.run_id} stopped by {exit_signal}")
+                    return
                 await self._maybe_sleep(config.loop_interval_seconds, sleep)
         except asyncio.CancelledError:
             await self.repository.finish_run(self.run_id, "stopped")
@@ -222,6 +265,34 @@ class DynoGridEngine:
             self.run_id,
             "flatten",
             "paper position flattened",
+            {"price": candle.close, "filled": fill is not None},
+        )
+
+    async def _cancel_all_and_flatten(self, candle: Candle, reason: str) -> None:
+        for order in await self.gateway.open_orders():
+            canceled = await self.gateway.cancel_order(order.client_order_id, candle.timestamp)
+            if canceled is not None:
+                await self.repository.persist_order(self.run_id, canceled)
+        fill = await self.gateway.flatten(candle.close, candle.timestamp)
+        if fill is not None:
+            await self.repository.persist_fill(self.run_id, fill)
+            await self.repository.persist_order(
+                self.run_id,
+                Order(
+                    client_order_id=fill.client_order_id,
+                    exchange_order_id=f"paper-{fill.client_order_id}",
+                    side=fill.side,
+                    price=fill.price,
+                    quantity=fill.quantity,
+                    status=OrderStatus.FILLED,
+                    created_at=fill.timestamp,
+                    updated_at=fill.timestamp,
+                ),
+            )
+        await self.repository.event(
+            self.run_id,
+            reason,
+            "paper position auto-flattened",
             {"price": candle.close, "filled": fill is not None},
         )
 

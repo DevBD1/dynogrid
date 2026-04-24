@@ -15,6 +15,12 @@ class Bias(str, Enum):
     SELL_ONLY = "sell_only"
 
 
+class BiasMode(str, Enum):
+    AUTO = "auto"
+    MEAN_REVERSION = "mean_reversion"
+    TREND_FOLLOWING = "trend_following"
+
+
 class OrderStatus(str, Enum):
     OPEN = "open"
     CANCELED = "canceled"
@@ -40,6 +46,21 @@ class BotConfig:
     min_quantity: float = 0.0
     stop_loss_pct: float = 0.10
     loop_interval_seconds: int = 60
+    recenter_hysteresis_pct: float = 0.001
+    atr_fast_period: int = 7
+    atr_slow_period: int = 28
+    taker_fee_rate: float = 0.001
+    simulated_slippage_bps: float = 1.0
+    ev_safety_multiplier: float = 1.10
+    max_ev_spacing_pct: float = 0.02
+    bias_mode: str = BiasMode.AUTO.value
+    ema_fast_period: int = 9
+    ema_slow_period: int = 21
+    outside_band_consecutive: int = 3
+    structure_lookback: int = 20
+    structure_break_atr_buffer: float = 0.25
+    inventory_spacing_threshold: float = 0.70
+    inventory_spacing_max_multiplier: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -58,6 +79,12 @@ class IndicatorSnapshot:
     bollinger_mid: float
     bollinger_upper: float
     bollinger_lower: float
+    atr_fast: float = 0.0
+    atr_slow: float = 0.0
+    ema_fast: float = 0.0
+    ema_slow: float = 0.0
+    closes_above_upper: int = 0
+    closes_below_lower: int = 0
 
 
 @dataclass(frozen=True)
@@ -67,6 +94,19 @@ class GridState:
     bias: Bias
     current_inventory: float
     max_inventory: float
+    buy_spacing: float = 0.0
+    sell_spacing: float = 0.0
+    effective_atr: float = 0.0
+    atr_fast: float = 0.0
+    atr_slow: float = 0.0
+    ev_min_spacing: float = 0.0
+    ev_positive: bool = True
+    volatility_ratio: float = 1.0
+    inventory_ratio: float = 0.0
+    grid_recentered: bool = False
+    trend_state: str = "neutral"
+    counter_trend_paused: bool = False
+    inventory_skew_cost_quote: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -124,3 +164,6 @@ class RiskState:
     paper_stop_loss_breached: bool
     paused: bool
     reason: str = ""
+    ev_positive: bool = True
+    trend_state: str = "neutral"
+    exit_signal: str = ""

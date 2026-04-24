@@ -9,9 +9,10 @@ The bot operates on a strict 1-minute cycle:
 1.  **Ingestion**: Fetch 1m OHLCV data.
 2.  **Analysis**: Calculate ATR (14) and Bollinger Bands (20, 2).
 3.  **Adaptive Spacing**: Set grid width as a multiple of ATR (\$S = ATR \times k\$).
-4.  **Trend Filter**: Adjust grid bias (Neutral, Long-only, or Short-only) based on Bollinger Band position.
-5.  **Re-centering**: Shift the grid center if the price drifts beyond the defined buffer.
-6.  **Sync**: Update exchange limit orders to match the new grid.
+4.  **EV Gate**: Widen or pause if round-trip expected value cannot cover fees and simulated slippage.
+5.  **Trend Filter**: Adjust grid bias with Bollinger Bands plus EMA momentum confirmation.
+6.  **Re-centering**: Shift the grid center only if both ATR and percent hysteresis gates pass.
+7.  **Sync**: Update exchange limit orders to match the new grid.
 
 ### Key Features
 - **Volatility-Aware**: Automatically widens the grid during spikes to reduce risk and narrows it during consolidation to maximize fill frequency.
@@ -136,6 +137,18 @@ Tune experiments in `config.yaml`:
 grid_count: 3
 atr_multiplier: 1.2
 order_size: 0.001
+recenter_hysteresis_pct: 0.001
+atr_fast_period: 7
+atr_slow_period: 28
+taker_fee_rate: 0.001
+simulated_slippage_bps: 1.0
+ev_safety_multiplier: 1.10
+max_ev_spacing_pct: 0.02
+bias_mode: auto
+ema_fast_period: 9
+ema_slow_period: 21
+outside_band_consecutive: 3
+inventory_spacing_threshold: 0.70
 ```
 
 Then run the bot and compare results:
@@ -167,7 +180,27 @@ dynogrid --config config.yaml run-live
 
 SQLite remains the operational source of truth. You can browse `dynogrid.sqlite3`
 directly to inspect `runs`, `candles`, `strategy_snapshots`, `orders`, `fills`,
-`balances`, `events`, and `config_versions`.
+`balances`, `events`, `strategy_metrics`, and `config_versions`.
+
+Research sweeps can be run from code or the notebook:
+
+```python
+from dynogrid.config import load_config
+from dynogrid.research.vector_backtest import run_parameter_sweep
+
+config = load_config("config.yaml")
+results = run_parameter_sweep(
+    "tests/fixtures/candles.csv",
+    config,
+    grid_counts=[2, 3],
+    atr_multipliers=[1.0, 1.2],
+    order_sizes=[0.001],
+    atr_periods=[14, 28],
+    ema_fast_periods=[9],
+    ema_slow_periods=[21],
+    bb_windows=[20],
+)
+```
 
 `run-live` is a future live-trading command stub. It exits with a safety error
 until live exchange order placement has precision checks, post-only enforcement,

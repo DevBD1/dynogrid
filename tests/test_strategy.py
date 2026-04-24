@@ -3,10 +3,15 @@ from __future__ import annotations
 from dynogrid.models import Balance, Bias, BotConfig, Candle, IndicatorSnapshot, Side
 from dynogrid.strategy.grid import (
     build_grid_state,
+    calculate_ev_min_spacing,
+    compute_risk_state,
     calculate_spacing,
     determine_bias,
+    determine_bias_with_mode,
     generate_desired_orders,
+    structural_exit_signal,
     update_center_price,
+    update_center_price_with_hysteresis,
 )
 from dynogrid.strategy.indicators import calculate_atr, calculate_bollinger
 
@@ -96,6 +101,113 @@ def test_desired_orders_respect_inventory_and_spot_sells() -> None:
 
     assert [order.side for order in desired].count(Side.BUY) == 1
     assert [order.side for order in desired].count(Side.SELL) == 1
+
+
+def test_dual_atr_and_ev_spacing_drive_effective_spacing() -> None:
+    cfg = config()
+    indicators = IndicatorSnapshot(
+        atr14=1.0,
+        atr_fast=4.0,
+        atr_slow=2.0,
+        bollinger_mid=100.0,
+        bollinger_upper=120.0,
+        bollinger_lower=80.0,
+    )
+    grid, _ = build_grid_state(cfg, indicators, 100.0, None, Balance(0.0, 1000.0))
+
+    assert grid.effective_atr == 4.0
+    assert grid.spacing == 4.0
+    assert round(calculate_ev_min_spacing(cfg, 100.0), 4) == 0.242
+
+
+def test_ev_pause_when_spacing_cap_is_exceeded() -> None:
+    cfg = BotConfig(**{**config().__dict__, "max_ev_spacing_pct": 0.001})
+    indicators = IndicatorSnapshot(
+        atr14=0.01,
+        atr_fast=0.01,
+        atr_slow=0.01,
+        bollinger_mid=100.0,
+        bollinger_upper=120.0,
+        bollinger_lower=80.0,
+    )
+    balance = Balance(0.0, 1000.0)
+    grid, fee_barrier = build_grid_state(cfg, indicators, 100.0, None, balance)
+    risk = compute_risk_state(cfg, balance, 100.0, 1000.0, False, fee_barrier, grid.ev_positive)
+
+    assert grid.ev_positive is False
+    assert risk.buys_enabled is False
+    assert risk.reason == "negative ev spacing cap"
+
+
+def test_center_hysteresis_requires_atr_and_percent_gates() -> None:
+    center, recentered = update_center_price_with_hysteresis(100.2, 100.0, 0.1, 0.01)
+    assert center == 100.0
+    assert recentered is False
+
+    center, recentered = update_center_price_with_hysteresis(101.2, 100.0, 0.1, 0.01)
+    assert center == 101.2
+    assert recentered is True
+
+
+def test_trend_following_bias_and_counter_trend_pause() -> None:
+    cfg = BotConfig(**{**config().__dict__, "bias_mode": "trend_following"})
+    indicators = IndicatorSnapshot(
+        atr14=1.0,
+        atr_fast=1.0,
+        atr_slow=1.0,
+        bollinger_mid=100.0,
+        bollinger_upper=110.0,
+        bollinger_lower=90.0,
+        ema_fast=105.0,
+        ema_slow=100.0,
+        closes_above_upper=3,
+    )
+    balance = Balance(base_free=0.1, quote_free=1000.0)
+    grid, fee_barrier = build_grid_state(cfg, indicators, 112.0, None, balance)
+    risk = cfg_risk(True, True, fee_barrier)
+    desired = generate_desired_orders(cfg, grid, risk, balance)
+
+    assert determine_bias_with_mode(112.0, indicators, "trend_following", "bullish_momentum") == Bias.LONG_ONLY
+    assert grid.trend_state == "bullish_momentum"
+    assert all(order.side == Side.BUY for order in desired)
+
+
+def test_inventory_weighted_spacing_widens_buy_side() -> None:
+    cfg = config()
+    indicators = IndicatorSnapshot(
+        atr14=10.0,
+        atr_fast=10.0,
+        atr_slow=10.0,
+        bollinger_mid=100.0,
+        bollinger_upper=120.0,
+        bollinger_lower=80.0,
+    )
+    grid, _ = build_grid_state(cfg, indicators, 100.0, None, Balance(0.18, 1000.0))
+
+    assert round(grid.inventory_ratio, 4) == 0.9
+    assert grid.buy_spacing > grid.sell_spacing
+    assert grid.inventory_skew_cost_quote > 0
+
+
+def test_structural_exit_signal_on_bearish_break() -> None:
+    cfg = config()
+    sample = [
+        Candle(1700000000 + index * 60, 100.0, 101.0, 99.0, 100.0, 1.0)
+        for index in range(21)
+    ]
+    sample.append(Candle(1700001260, 98.0, 99.0, 90.0, 90.0, 1.0))
+    indicators = IndicatorSnapshot(
+        atr14=10.0,
+        atr_fast=10.0,
+        atr_slow=10.0,
+        bollinger_mid=100.0,
+        bollinger_upper=120.0,
+        bollinger_lower=80.0,
+        ema_fast=90.0,
+        ema_slow=100.0,
+    )
+
+    assert structural_exit_signal(cfg, sample, indicators, Balance(0.1, 1000.0)) == "structure_break"
 
 
 def cfg_risk(
