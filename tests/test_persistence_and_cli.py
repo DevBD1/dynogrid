@@ -66,13 +66,14 @@ def test_cli_config_check_and_backtest_smoke(tmp_path: Path) -> None:
         capture_output=True,
         text=True,
     )
-    assert json.loads(config_check.stdout)["ok"] is True
+    assert "Config OK" in config_check.stdout
 
     backtest = subprocess.run(
         [
             sys.executable,
             "-m",
             "dynogrid.cli",
+            "--json",
             "--config",
             str(config_path),
             "backtest",
@@ -83,7 +84,7 @@ def test_cli_config_check_and_backtest_smoke(tmp_path: Path) -> None:
         capture_output=True,
         text=True,
     )
-    assert json.loads(backtest.stdout)["mode"] == "backtest"
+    run_id = json.loads(backtest.stdout)["run_id"]
 
     with sqlite3.connect(tmp_path / "dynogrid.sqlite3") as db:
         snapshots = db.execute("SELECT COUNT(*) FROM strategy_snapshots").fetchone()[0]
@@ -91,3 +92,21 @@ def test_cli_config_check_and_backtest_smoke(tmp_path: Path) -> None:
 
     assert snapshots > 0
     assert fills >= 0
+
+    performance = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "dynogrid.cli",
+            "--config",
+            str(config_path),
+            "performance",
+            "--run-id",
+            str(run_id),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert f"Run {run_id} backtest finished" in performance.stdout
+    assert "pnl=" in performance.stdout

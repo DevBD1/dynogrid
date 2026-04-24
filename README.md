@@ -102,9 +102,17 @@ Inspect or control the bot through CLI commands backed by SQLite runtime state:
 ```bash
 dynogrid --config config.yaml config-check
 dynogrid --config config.yaml status
+dynogrid --config config.yaml performance --run-id 4
 dynogrid --config config.yaml pause
 dynogrid --config config.yaml resume
 dynogrid --config config.yaml flatten
+```
+
+Use `--json` before the command when you want machine-readable output:
+
+```bash
+dynogrid --json --config config.yaml status
+dynogrid --json --config config.yaml performance --run-id 4
 ```
 
 All commands:
@@ -115,6 +123,7 @@ dynogrid --config config.yaml run-live-paper [--cycles N]
 dynogrid --config config.yaml backtest --candles tests/fixtures/candles.csv [--cycles N]
 dynogrid --config config.yaml run-paper --candles tests/fixtures/candles.csv [--cycles N] [--sleep]
 dynogrid --config config.yaml status
+dynogrid --config config.yaml performance --run-id RUN_ID
 dynogrid --config config.yaml pause
 dynogrid --config config.yaml resume
 dynogrid --config config.yaml flatten

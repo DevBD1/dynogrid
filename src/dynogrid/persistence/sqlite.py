@@ -263,6 +263,99 @@ class SQLiteRepository:
             "paused": paused == "1",
         }
 
+    async def performance(self, run_id: int) -> dict[str, object]:
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            run_cursor = await db.execute("SELECT * FROM runs WHERE id = ?", (run_id,))
+            run = await run_cursor.fetchone()
+            if run is None:
+                raise ValueError(f"run_id {run_id} not found")
+
+            balance_cursor = await db.execute(
+                """
+                SELECT
+                    COUNT(*) AS balance_rows,
+                    MIN(equity) AS min_equity,
+                    MAX(equity) AS max_equity
+                FROM balances
+                WHERE run_id = ?
+                """,
+                (run_id,),
+            )
+            balance_stats = await balance_cursor.fetchone()
+
+            first_cursor = await db.execute(
+                "SELECT * FROM balances WHERE run_id = ? ORDER BY id ASC LIMIT 1",
+                (run_id,),
+            )
+            first_balance = await first_cursor.fetchone()
+            last_cursor = await db.execute(
+                "SELECT * FROM balances WHERE run_id = ? ORDER BY id DESC LIMIT 1",
+                (run_id,),
+            )
+            last_balance = await last_cursor.fetchone()
+
+            fill_cursor = await db.execute(
+                """
+                SELECT
+                    COUNT(*) AS fill_count,
+                    COALESCE(SUM(CASE WHEN side = 'buy' THEN quantity ELSE 0 END), 0) AS bought_qty,
+                    COALESCE(SUM(CASE WHEN side = 'sell' THEN quantity ELSE 0 END), 0) AS sold_qty,
+                    COALESCE(SUM(fee), 0) AS total_fees
+                FROM fills
+                WHERE run_id = ?
+                """,
+                (run_id,),
+            )
+            fills = await fill_cursor.fetchone()
+
+            order_cursor = await db.execute(
+                """
+                SELECT status, COUNT(*) AS count
+                FROM orders
+                WHERE run_id = ?
+                GROUP BY status
+                """,
+                (run_id,),
+            )
+            order_rows = await order_cursor.fetchall()
+
+            snapshot_cursor = await db.execute(
+                """
+                SELECT COUNT(*) AS snapshot_count
+                FROM strategy_snapshots
+                WHERE run_id = ?
+                """,
+                (run_id,),
+            )
+            snapshots = await snapshot_cursor.fetchone()
+
+        start_equity = float(first_balance["equity"]) if first_balance else 0.0
+        end_equity = float(last_balance["equity"]) if last_balance else 0.0
+        pnl = end_equity - start_equity
+        pnl_pct = (pnl / start_equity * 100.0) if start_equity else 0.0
+        max_equity = float(balance_stats["max_equity"]) if balance_stats["max_equity"] else 0.0
+        min_equity = float(balance_stats["min_equity"]) if balance_stats["min_equity"] else 0.0
+        max_drawdown = max_equity - min_equity
+        max_drawdown_pct = (max_drawdown / max_equity * 100.0) if max_equity else 0.0
+
+        return {
+            "run": dict(run),
+            "cycles": int(snapshots["snapshot_count"]) if snapshots else 0,
+            "balance_rows": int(balance_stats["balance_rows"]) if balance_stats else 0,
+            "start_equity": start_equity,
+            "end_equity": end_equity,
+            "pnl": pnl,
+            "pnl_pct": pnl_pct,
+            "min_equity": min_equity,
+            "max_equity": max_equity,
+            "max_drawdown": max_drawdown,
+            "max_drawdown_pct": max_drawdown_pct,
+            "fills": dict(fills) if fills else {},
+            "orders": {row["status"]: int(row["count"]) for row in order_rows},
+            "last_balance": dict(last_balance) if last_balance else None,
+        }
+
 
 SCHEMA = """
 PRAGMA journal_mode = WAL;

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from typing import Callable
 
 from dynogrid.config import config_hash, load_config
 from dynogrid.exchange.paper import PaperExchangeGateway
@@ -22,6 +23,8 @@ from dynogrid.strategy.grid import (
 from dynogrid.strategy.indicators import calculate_indicators
 from dynogrid.strategy.reconcile import diff_orders
 
+ProgressReporter = Callable[[str], None]
+
 
 class DynoGridEngine:
     def __init__(
@@ -32,6 +35,7 @@ class DynoGridEngine:
         market_data: MarketDataSource,
         run_id: int,
         initial_candles: list[Candle] | None = None,
+        reporter: ProgressReporter | None = None,
     ) -> None:
         self.config_path = Path(config_path)
         self.repository = repository
@@ -42,17 +46,24 @@ class DynoGridEngine:
         self._previous_center: float | None = None
         self._starting_equity: float | None = None
         self._stop_event_written = False
+        self._reporter = reporter
 
     async def run(self, max_cycles: int | None = None, sleep: bool = False) -> None:
         completed = 0
+        self._report(
+            f"run {self.run_id} started; warmup_candles={len(self._candles)} "
+            f"target_cycles={max_cycles if max_cycles is not None else 'unlimited'}"
+        )
         try:
             while max_cycles is None or completed < max_cycles:
                 config = load_config(self.config_path)
                 self.gateway.config = config
                 config_hash_value = await self.repository.upsert_config_version(config)
 
+                self._report("waiting for next closed candle")
                 candle = await self.market_data.next_candle()
                 if candle is None:
+                    self._report("no more candles from market data source")
                     break
 
                 await self.repository.persist_candle(self.run_id, config.symbol, candle)
@@ -76,6 +87,10 @@ class DynoGridEngine:
                         {"candles": len(self._candles)},
                     )
                     completed += 1
+                    self._report(
+                        f"cycle={completed} candle={candle.timestamp} close={candle.close:.2f} "
+                        f"warmup={len(self._candles)}/20 equity={mark_equity(balance, candle.close):.2f}"
+                    )
                     await self._maybe_sleep(config.loop_interval_seconds, sleep)
                     continue
 
@@ -148,6 +163,7 @@ class DynoGridEngine:
                     )
 
                 balance = await self.gateway.balance()
+                equity = mark_equity(balance, candle.close)
                 await self.repository.persist_snapshot(
                     run_id=self.run_id,
                     config_hash_value=config_hash_value,
@@ -161,16 +177,26 @@ class DynoGridEngine:
                     self.run_id,
                     candle.timestamp,
                     balance,
-                    mark_equity(balance, candle.close),
+                    equity,
                 )
 
                 completed += 1
+                self._report(
+                    f"cycle={completed} candle={candle.timestamp} close={candle.close:.2f} "
+                    f"bias={grid.bias.value} center={grid.center_price:.2f} "
+                    f"spacing={grid.spacing:.2f} desired={len(desired)} "
+                    f"created={len(plan.create_orders)} canceled={len(plan.cancel_order_ids)} "
+                    f"fills={len(fills)} open={len(await self.gateway.open_orders())} "
+                    f"equity={equity:.2f}"
+                )
                 await self._maybe_sleep(config.loop_interval_seconds, sleep)
         except Exception:
             await self.repository.finish_run(self.run_id, "failed")
+            self._report(f"run {self.run_id} failed")
             raise
         else:
             await self.repository.finish_run(self.run_id, "finished")
+            self._report(f"run {self.run_id} finished after {completed} cycles")
         finally:
             await self.market_data.close()
 
@@ -198,6 +224,10 @@ class DynoGridEngine:
         if enabled:
             await asyncio.sleep(seconds)
 
+    def _report(self, message: str) -> None:
+        if self._reporter is not None:
+            self._reporter(message)
+
 
 async def run_historical(
     config_path: str | Path,
@@ -205,6 +235,7 @@ async def run_historical(
     mode: str,
     max_cycles: int | None = None,
     sleep: bool = False,
+    reporter: ProgressReporter | None = None,
 ) -> int:
     config = load_config(config_path)
     repository = SQLiteRepository(config.db_path)
@@ -212,7 +243,9 @@ async def run_historical(
     run_id = await repository.create_run(mode, config)
     market_data = CsvMarketDataSource(load_candles_csv(candles_path))
     gateway = PaperExchangeGateway(config)
-    engine = DynoGridEngine(config_path, repository, gateway, market_data, run_id)
+    engine = DynoGridEngine(
+        config_path, repository, gateway, market_data, run_id, reporter=reporter
+    )
     await engine.run(max_cycles=max_cycles, sleep=sleep)
     return run_id
 
@@ -220,13 +253,20 @@ async def run_historical(
 async def run_live_paper(
     config_path: str | Path,
     max_cycles: int | None = None,
+    reporter: ProgressReporter | None = None,
 ) -> int:
     config = load_config(config_path)
     repository = SQLiteRepository(config.db_path)
     await repository.init()
     run_id = await repository.create_run("live-paper", config)
+    if reporter is not None:
+        reporter(f"run {run_id} created in live-paper mode for {config.symbol}")
     market_data = CcxtClosedCandleSource(config)
+    if reporter is not None:
+        reporter("fetching closed candles for indicator warmup")
     initial_candles = await market_data.seed_candles()
+    if reporter is not None:
+        reporter(f"seeded {len(initial_candles)} closed candles; next cycles use new live candles")
     await repository.event(
         run_id,
         "live_paper_seed",
@@ -241,6 +281,7 @@ async def run_live_paper(
         market_data,
         run_id,
         initial_candles=initial_candles,
+        reporter=reporter,
     )
     await engine.run(max_cycles=max_cycles, sleep=False)
     return run_id
