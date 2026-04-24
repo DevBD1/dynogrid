@@ -1,36 +1,68 @@
+# Trading pair to run the bot on.
 symbol: BTC/USDT
+# Candle interval used by the strategy loop.
 timeframe: 1m
+# Exchange adapter name; paper mode currently uses Binance-shaped market data.
 exchange_id: binance
+# SQLite database file used for runs, orders, fills, balances, and events.
 db_path: dynogrid.sqlite3
 
+# Number of buy/sell grid levels to place around the center.
 grid_count: 3
+# Multiplier applied to effective ATR to calculate grid spacing.
 atr_multiplier: 1.2
+# Base asset quantity per grid order.
 order_size: 0.001
+# Maximum base inventory allowed before new buys are blocked.
 max_inventory: 0.01
+# Maker fee rate used for paper fills and spacing checks.
 maker_fee_rate: 0.001
+# Taker fee rate used for EV safety validation.
 taker_fee_rate: 0.001
+# Equity drawdown limit; breach triggers paper auto-flatten and stops the run.
 stop_loss_pct: 0.10
+# Simulated slippage per fill in basis points for EV validation.
 simulated_slippage_bps: 1.0
+# Extra safety multiplier applied to minimum EV-positive spacing.
 ev_safety_multiplier: 1.10
+# Maximum allowed EV minimum spacing as a percent of price before pausing entries.
 max_ev_spacing_pct: 0.02
 
+# Percent hysteresis required before the grid center can recenter.
 recenter_hysteresis_pct: 0.001
+# Fast ATR period used for sudden volatility detection.
 atr_fast_period: 7
+# Slow ATR period used for broader volatility regime detection.
 atr_slow_period: 28
+# Bias behavior: auto, mean_reversion, or trend_following.
 bias_mode: auto
+# Fast EMA period used for trend confirmation.
 ema_fast_period: 9
+# Slow EMA period used for trend confirmation.
 ema_slow_period: 21
+# Consecutive closes outside Bollinger Bands before counter-trend entries are blocked.
 outside_band_consecutive: 3
+# Candle lookback used to detect recent structure lows.
 structure_lookback: 20
+# ATR buffer below structure low before structural exit triggers.
 structure_break_atr_buffer: 0.25
+# Inventory ratio where buy-side spacing starts widening.
 inventory_spacing_threshold: 0.70
+# Maximum extra buy-side spacing multiplier at full inventory.
 inventory_spacing_max_multiplier: 1.0
 
+# Starting paper base asset balance.
 starting_base: 0.0
+# Starting paper quote asset balance.
 starting_quote: 1000.0
 
+# Decimal places allowed for order prices.
 price_precision: 2
+# Decimal places allowed for order quantities.
 quantity_precision: 6
+# Minimum valid order price.
 min_price: 1.0
+# Minimum valid order quantity.
 min_quantity: 0.0001
+# Seconds between live-paper strategy cycles.
 loop_interval_seconds: 60
