@@ -72,6 +72,14 @@ Run live paper trading for a fixed number of newly closed candles:
 dynogrid --config config.yaml run-live-paper --cycles 5
 ```
 
+Run live paper trading with a live terminal dashboard. Leave `--cycles` out to
+keep it running until you press `Ctrl+C`:
+
+```bash
+dynogrid --config config.yaml run-live-paper --watch
+dynogrid --config config.yaml run-live-paper --watch --refresh 2
+```
+
 Run a historical paper simulation from 1m candles:
 
 ```bash
@@ -103,6 +111,9 @@ Inspect or control the bot through CLI commands backed by SQLite runtime state:
 dynogrid --config config.yaml config-check
 dynogrid --config config.yaml status
 dynogrid --config config.yaml performance --run-id 4
+dynogrid --config config.yaml orders
+dynogrid --config config.yaml orders --run-id 4 --status all
+dynogrid --config config.yaml fills --run-id 4 --limit 20
 dynogrid --config config.yaml pause
 dynogrid --config config.yaml resume
 dynogrid --config config.yaml flatten
@@ -113,25 +124,54 @@ Use `--json` before the command when you want machine-readable output:
 ```bash
 dynogrid --json --config config.yaml status
 dynogrid --json --config config.yaml performance --run-id 4
+dynogrid --json --config config.yaml orders --run-id 4
+dynogrid --json --config config.yaml fills --run-id 4
+```
+
+### Experiment Knobs
+
+Tune experiments in `config.yaml`:
+
+```yaml
+grid_count: 3
+atr_multiplier: 1.2
+order_size: 0.001
+```
+
+Then run the bot and compare results:
+
+```bash
+dynogrid --config config.yaml config-check
+dynogrid --config config.yaml run-live-paper --cycles 5
+dynogrid --config config.yaml performance --run-id RUN_ID
+dynogrid --config config.yaml orders --run-id RUN_ID --status all
+dynogrid --config config.yaml fills --run-id RUN_ID
 ```
 
 All commands:
 
 ```bash
 dynogrid --config config.yaml config-check
-dynogrid --config config.yaml run-live-paper [--cycles N]
+dynogrid --config config.yaml run-live-paper [--cycles N] [--watch] [--refresh seconds]
 dynogrid --config config.yaml backtest --candles tests/fixtures/candles.csv [--cycles N]
 dynogrid --config config.yaml run-paper --candles tests/fixtures/candles.csv [--cycles N] [--sleep]
 dynogrid --config config.yaml status
 dynogrid --config config.yaml performance --run-id RUN_ID
+dynogrid --config config.yaml orders [--run-id RUN_ID] [--status open|filled|canceled|all]
+dynogrid --config config.yaml fills [--run-id RUN_ID] [--limit N]
 dynogrid --config config.yaml pause
 dynogrid --config config.yaml resume
 dynogrid --config config.yaml flatten
+dynogrid --config config.yaml run-live
 ```
 
 SQLite remains the operational source of truth. You can browse `dynogrid.sqlite3`
 directly to inspect `runs`, `candles`, `strategy_snapshots`, `orders`, `fills`,
 `balances`, `events`, and `config_versions`.
+
+`run-live` is a future live-trading command stub. It exits with a safety error
+until live exchange order placement has precision checks, post-only enforcement,
+exchange sync, CCXT backoff, and global stop-loss auto-flatten.
 
 ### Tests
 

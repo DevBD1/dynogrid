@@ -4,7 +4,9 @@ import asyncio
 from pathlib import Path
 from typing import Callable
 
-from dynogrid.config import config_hash, load_config
+from dynogrid.config import load_config
+from dynogrid.exchange.base import ExchangeGateway
+from dynogrid.exchange.ccxt_binance import BinanceCcxtGateway, LiveTradingDisabledError
 from dynogrid.exchange.paper import PaperExchangeGateway
 from dynogrid.market_data import (
     CcxtClosedCandleSource,
@@ -12,7 +14,7 @@ from dynogrid.market_data import (
     MarketDataSource,
     load_candles_csv,
 )
-from dynogrid.models import Candle, Order, OrderStatus
+from dynogrid.models import BotConfig, Candle, Order, OrderStatus
 from dynogrid.persistence.sqlite import SQLiteRepository
 from dynogrid.strategy.grid import (
     build_grid_state,
@@ -31,7 +33,7 @@ class DynoGridEngine:
         self,
         config_path: str | Path,
         repository: SQLiteRepository,
-        gateway: PaperExchangeGateway,
+        gateway: ExchangeGateway,
         market_data: MarketDataSource,
         run_id: int,
         initial_candles: list[Candle] | None = None,
@@ -190,6 +192,10 @@ class DynoGridEngine:
                     f"equity={equity:.2f}"
                 )
                 await self._maybe_sleep(config.loop_interval_seconds, sleep)
+        except asyncio.CancelledError:
+            await self.repository.finish_run(self.run_id, "stopped")
+            self._report(f"run {self.run_id} stopped")
+            raise
         except Exception:
             await self.repository.finish_run(self.run_id, "failed")
             self._report(f"run {self.run_id} failed")
@@ -242,7 +248,7 @@ async def run_historical(
     await repository.init()
     run_id = await repository.create_run(mode, config)
     market_data = CsvMarketDataSource(load_candles_csv(candles_path))
-    gateway = PaperExchangeGateway(config)
+    gateway = create_gateway(mode, config)
     engine = DynoGridEngine(
         config_path, repository, gateway, market_data, run_id, reporter=reporter
     )
@@ -255,6 +261,15 @@ async def run_live_paper(
     max_cycles: int | None = None,
     reporter: ProgressReporter | None = None,
 ) -> int:
+    repository, run_id, engine = await prepare_live_paper_engine(config_path, reporter)
+    await engine.run(max_cycles=max_cycles, sleep=False)
+    return run_id
+
+
+async def prepare_live_paper_engine(
+    config_path: str | Path,
+    reporter: ProgressReporter | None = None,
+) -> tuple[SQLiteRepository, int, DynoGridEngine]:
     config = load_config(config_path)
     repository = SQLiteRepository(config.db_path)
     await repository.init()
@@ -273,7 +288,7 @@ async def run_live_paper(
         "loaded closed candles for indicator warmup",
         {"candles": len(initial_candles)},
     )
-    gateway = PaperExchangeGateway(config)
+    gateway = create_gateway("live-paper", config)
     engine = DynoGridEngine(
         config_path,
         repository,
@@ -283,5 +298,22 @@ async def run_live_paper(
         initial_candles=initial_candles,
         reporter=reporter,
     )
-    await engine.run(max_cycles=max_cycles, sleep=False)
-    return run_id
+    return repository, run_id, engine
+
+
+def create_gateway(mode: str, config: BotConfig) -> ExchangeGateway:
+    if mode in {"paper", "backtest", "live-paper"}:
+        return PaperExchangeGateway(config)
+    if mode == "live":
+        return BinanceCcxtGateway(config)
+    raise ValueError(f"unknown execution mode: {mode}")
+
+
+async def run_live(
+    config_path: str | Path,
+    max_cycles: int | None = None,
+    reporter: ProgressReporter | None = None,
+) -> int:
+    raise LiveTradingDisabledError(
+        "live trading disabled until safety gates are implemented"
+    )

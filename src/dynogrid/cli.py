@@ -3,16 +3,19 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+from contextlib import suppress
 from dataclasses import asdict
 from datetime import datetime, timezone
 from typing import Any
 
 from dynogrid.config import config_hash, load_config
-from dynogrid.engine import run_historical, run_live_paper
+from dynogrid.engine import prepare_live_paper_engine, run_historical, run_live, run_live_paper
+from dynogrid.exchange.ccxt_binance import LiveTradingDisabledError
 from dynogrid.persistence.sqlite import SQLiteRepository
+from dynogrid.terminal_dashboard import watch_run
 
 
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="dynogrid")
     parser.add_argument("--config", default="config.example.yaml")
     parser.add_argument("--json", action="store_true", help="print machine-readable JSON")
@@ -27,6 +30,11 @@ def main() -> None:
 
     live_paper = subparsers.add_parser("run-live-paper")
     live_paper.add_argument("--cycles", type=int)
+    live_paper.add_argument("--watch", action="store_true")
+    live_paper.add_argument("--refresh", type=float, default=2.0)
+
+    live = subparsers.add_parser("run-live")
+    live.add_argument("--cycles", type=int)
 
     backtest = subparsers.add_parser("backtest")
     backtest.add_argument("--candles", required=True)
@@ -35,12 +43,30 @@ def main() -> None:
     subparsers.add_parser("status")
     performance = subparsers.add_parser("performance")
     performance.add_argument("--run-id", type=int, required=True)
+    orders = subparsers.add_parser("orders")
+    orders.add_argument("--run-id", type=int)
+    orders.add_argument(
+        "--status",
+        choices=("open", "filled", "canceled", "all"),
+        default="open",
+    )
+    fills = subparsers.add_parser("fills")
+    fills.add_argument("--run-id", type=int)
+    fills.add_argument("--limit", type=int, default=20)
     subparsers.add_parser("pause")
     subparsers.add_parser("resume")
     subparsers.add_parser("flatten")
+    return parser
 
+
+def main() -> None:
+    parser = build_parser()
     args = parser.parse_args()
-    asyncio.run(_run(args))
+    try:
+        asyncio.run(_run(args))
+    except KeyboardInterrupt:
+        if not args.json:
+            print("\nstopped")
 
 
 async def _run(args: argparse.Namespace) -> None:
@@ -53,7 +79,9 @@ async def _run(args: argparse.Namespace) -> None:
             {"ok": True, "config_hash": config_hash(config), "config": asdict(config)},
             "Config OK\n"
             f"symbol={config.symbol} timeframe={config.timeframe} "
-            f"db={config.db_path} hash={config_hash(config)}",
+            f"db={config.db_path} hash={config_hash(config)}\n"
+            f"grid_count={config.grid_count} atr_multiplier={config.atr_multiplier} "
+            f"order_size={config.order_size}",
         )
         return
 
@@ -66,16 +94,61 @@ async def _run(args: argparse.Namespace) -> None:
             sleep=args.sleep,
             reporter=None if args.json else _progress,
         )
-        _print(args, {"run_id": run_id, "mode": "paper"}, f"run {run_id} finished in paper mode")
+        await _print_run_result(args, repository, run_id, "paper")
         return
 
     if args.command == "run-live-paper":
+        if args.json and args.watch:
+            _print(
+                args,
+                {"ok": False, "error": "--json cannot be used with --watch"},
+                "--json cannot be used with --watch",
+            )
+            raise SystemExit(2)
+        if args.watch:
+            if args.refresh <= 0:
+                _print(
+                    args,
+                    {"ok": False, "error": "--refresh must be > 0"},
+                    "--refresh must be > 0",
+                )
+                raise SystemExit(2)
+            repository, run_id, engine = await prepare_live_paper_engine(
+                config_path=args.config,
+                reporter=None,
+            )
+            engine_task = asyncio.create_task(
+                engine.run(max_cycles=args.cycles, sleep=False)
+            )
+            try:
+                await watch_run(repository, run_id, engine_task, args.refresh)
+            except asyncio.CancelledError:
+                engine_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await engine_task
+                raise
+            if not engine_task.cancelled():
+                await _print_run_result(args, repository, run_id, "live-paper")
+            return
+
         run_id = await run_live_paper(
             config_path=args.config,
             max_cycles=args.cycles,
             reporter=None if args.json else _progress,
         )
-        _print(args, {"run_id": run_id, "mode": "live-paper"}, f"run {run_id} finished in live-paper mode")
+        await _print_run_result(args, repository, run_id, "live-paper")
+        return
+
+    if args.command == "run-live":
+        try:
+            await run_live(
+                config_path=args.config,
+                max_cycles=args.cycles,
+                reporter=None if args.json else _progress,
+            )
+        except LiveTradingDisabledError as exc:
+            _print(args, {"ok": False, "error": str(exc)}, str(exc))
+            raise SystemExit(2) from exc
         return
 
     if args.command == "backtest":
@@ -87,7 +160,7 @@ async def _run(args: argparse.Namespace) -> None:
             sleep=False,
             reporter=None if args.json else _progress,
         )
-        _print(args, {"run_id": run_id, "mode": "backtest"}, f"run {run_id} finished in backtest mode")
+        await _print_run_result(args, repository, run_id, "backtest")
         return
 
     await repository.init()
@@ -100,6 +173,16 @@ async def _run(args: argparse.Namespace) -> None:
     if args.command == "performance":
         performance = await repository.performance(args.run_id)
         _print(args, performance, _format_performance(performance))
+        return
+
+    if args.command == "orders":
+        orders = await repository.list_orders(run_id=args.run_id, status=args.status)
+        _print(args, {"orders": orders}, _format_orders(orders, args.status))
+        return
+
+    if args.command == "fills":
+        fills = await repository.list_fills(run_id=args.run_id, limit=args.limit)
+        _print(args, {"fills": fills}, _format_fills(fills))
         return
 
     if args.command == "pause":
@@ -127,7 +210,18 @@ def _progress(message: str) -> None:
     print(f"[{_now()}] {message}", flush=True)
 
 
-def _print(args: argparse.Namespace, payload: dict[str, Any], human: str) -> None:
+async def _print_run_result(
+    args: argparse.Namespace, repository: SQLiteRepository, run_id: int, mode: str
+) -> None:
+    performance = await repository.performance(run_id)
+    _print(
+        args,
+        {"run_id": run_id, "mode": mode, "performance": performance},
+        f"run {run_id} finished in {mode} mode\n\n{_format_performance(performance)}",
+    )
+
+
+def _print(args: argparse.Namespace, payload: Any, human: str) -> None:
     if args.json:
         print(json.dumps(payload, indent=2, sort_keys=True))
     else:
@@ -188,6 +282,61 @@ def _format_performance(performance: dict[str, Any]) -> str:
             else "last_balance unavailable",
         ]
     )
+
+
+def _format_orders(orders: list[dict[str, Any]], status: str) -> str:
+    if not orders:
+        if status == "all":
+            return "No orders found."
+        return f"No {status} orders found."
+    lines = [_table_header(["side", "price", "qty", "status", "updated", "client_order_id"])]
+    for order in orders:
+        lines.append(
+            _table_row(
+                [
+                    str(order["side"]),
+                    f"{float(order['price']):.2f}",
+                    f"{float(order['quantity']):.8f}",
+                    str(order["status"]),
+                    str(order["updated_at"]),
+                    str(order["client_order_id"]),
+                ]
+            )
+        )
+    return "\n".join(lines)
+
+
+def _format_fills(fills: list[dict[str, Any]]) -> str:
+    if not fills:
+        return "No fills found."
+    lines = [_table_header(["time", "side", "price", "qty", "fee", "client_order_id"])]
+    for fill in fills:
+        lines.append(
+            _table_row(
+                [
+                    str(fill["timestamp"]),
+                    str(fill["side"]),
+                    f"{float(fill['price']):.2f}",
+                    f"{float(fill['quantity']):.8f}",
+                    f"{float(fill['fee']):.8f}",
+                    str(fill["client_order_id"]),
+                ]
+            )
+        )
+    return "\n".join(lines)
+
+
+def _table_header(columns: list[str]) -> str:
+    return _table_row(columns)
+
+
+def _table_row(values: list[str]) -> str:
+    widths = [6, 12, 12, 10, 12, 0]
+    padded = [
+        value.ljust(width) if width else value
+        for value, width in zip(values, widths, strict=True)
+    ]
+    return "  ".join(padded)
 
 
 def _now() -> str:

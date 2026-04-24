@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from dynogrid.models import Balance, Candle, DesiredOrder, Fill, Order
+from dynogrid.models import Balance, BotConfig, Candle, DesiredOrder, Fill, Order
 
 
 class ExchangeGateway(Protocol):
+    config: BotConfig
+
     async def open_orders(self) -> list[Order]:
         ...
 
@@ -19,4 +21,7 @@ class ExchangeGateway(Protocol):
         ...
 
     async def balance(self) -> Balance:
+        ...
+
+    async def flatten(self, price: float, timestamp: int) -> Fill | None:
         ...

@@ -228,6 +228,149 @@ class SQLiteRepository:
             row = await cursor.fetchone()
         return str(row[0]) if row else default
 
+    async def latest_run_id(self) -> int | None:
+        async with aiosqlite.connect(self.path) as db:
+            cursor = await db.execute("SELECT id FROM runs ORDER BY id DESC LIMIT 1")
+            row = await cursor.fetchone()
+        return int(row[0]) if row else None
+
+    async def list_orders(
+        self, run_id: int | None = None, status: str = "open"
+    ) -> list[dict[str, object]]:
+        if run_id is None:
+            run_id = await self.latest_run_id()
+        if run_id is None:
+            return []
+
+        params: list[object] = [run_id]
+        status_clause = ""
+        if status != "all":
+            status_clause = "AND status = ?"
+            params.append(status)
+
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                f"""
+                SELECT run_id, client_order_id, exchange_order_id, side, price, quantity,
+                       status, created_at, updated_at
+                FROM orders
+                WHERE run_id = ?
+                {status_clause}
+                ORDER BY updated_at DESC, client_order_id ASC
+                """,
+                params,
+            )
+            rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def list_fills(
+        self, run_id: int | None = None, limit: int = 20
+    ) -> list[dict[str, object]]:
+        if run_id is None:
+            run_id = await self.latest_run_id()
+        if run_id is None:
+            return []
+
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                """
+                SELECT id, run_id, client_order_id, side, price, quantity, fee, timestamp
+                FROM fills
+                WHERE run_id = ?
+                ORDER BY timestamp DESC, id DESC
+                LIMIT ?
+                """,
+                (run_id, limit),
+            )
+            rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def latest_balance(self, run_id: int) -> dict[str, object] | None:
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT * FROM balances WHERE run_id = ? ORDER BY id DESC LIMIT 1",
+                (run_id,),
+            )
+            row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def latest_snapshot(self, run_id: int) -> dict[str, object] | None:
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                """
+                SELECT *
+                FROM strategy_snapshots
+                WHERE run_id = ?
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (run_id,),
+            )
+            row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def latest_events(
+        self, run_id: int, limit: int = 5
+    ) -> list[dict[str, object]]:
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                """
+                SELECT id, run_id, timestamp, event_type, message, payload
+                FROM events
+                WHERE run_id = ? OR run_id IS NULL
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (run_id, limit),
+            )
+            rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def watch_snapshot(self, run_id: int) -> dict[str, object]:
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            run_cursor = await db.execute("SELECT * FROM runs WHERE id = ?", (run_id,))
+            run = await run_cursor.fetchone()
+            if run is None:
+                raise ValueError(f"run_id {run_id} not found")
+
+            order_cursor = await db.execute(
+                """
+                SELECT status, COUNT(*) AS count
+                FROM orders
+                WHERE run_id = ?
+                GROUP BY status
+                """,
+                (run_id,),
+            )
+            order_rows = await order_cursor.fetchall()
+            fill_cursor = await db.execute(
+                "SELECT COUNT(*) AS count FROM fills WHERE run_id = ?",
+                (run_id,),
+            )
+            fills = await fill_cursor.fetchone()
+            state_cursor = await db.execute(
+                "SELECT value FROM runtime_state WHERE key = 'paused'"
+            )
+            state = await state_cursor.fetchone()
+
+        return {
+            "run": dict(run),
+            "balance": await self.latest_balance(run_id),
+            "snapshot": await self.latest_snapshot(run_id),
+            "orders": await self.list_orders(run_id, "open"),
+            "fills": await self.list_fills(run_id, 10),
+            "events": await self.latest_events(run_id, 5),
+            "order_counts": {row["status"]: int(row["count"]) for row in order_rows},
+            "fill_count": int(fills["count"]) if fills else 0,
+            "paused": str(state["value"]) == "1" if state else False,
+        }
+
     async def latest_status(self) -> dict[str, object]:
         async with aiosqlite.connect(self.path) as db:
             db.row_factory = aiosqlite.Row
