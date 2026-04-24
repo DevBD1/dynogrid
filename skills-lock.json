@@ -10,6 +10,11 @@
       "source": "anthropics/knowledge-work-plugins",
       "sourceType": "github",
       "computedHash": "5915b5f79ae74f20473c4922075b091f290374d26b26c927af9c767102424ac4"
+    },
+    "quant-analyst": {
+      "source": "sickn33/antigravity-awesome-skills",
+      "sourceType": "github",
+      "computedHash": "4b0add59799a4b7ca897812e9845b2af5f69c1308e8d144d2d5c6511ac0adf07"
     }
   }
 }
