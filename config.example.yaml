@@ -1,7 +1,9 @@
 # Trading pair to run the bot on.
 symbol: BTC/USDT
-# Candle interval used by the strategy loop.
+# Candle interval used for ingestion and paper fill checks.
 timeframe: 1m
+# Candle interval used for strategy decisions and grid repricing.
+strategy_timeframe: 5m
 # Exchange adapter name; paper mode currently uses Binance-shaped market data.
 exchange_id: binance
 # SQLite database file used for runs, orders, fills, balances, and events.
@@ -30,6 +32,8 @@ max_ev_spacing_pct: 0.02
 
 # Percent hysteresis required before the grid center can recenter.
 recenter_hysteresis_pct: 0.001
+# Percent spacing change required before open grid levels are repriced.
+spacing_hysteresis_pct: 0.01
 # Fast ATR period used for sudden volatility detection.
 atr_fast_period: 7
 # Slow ATR period used for broader volatility regime detection.

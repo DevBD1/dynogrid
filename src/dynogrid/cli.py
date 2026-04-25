@@ -79,10 +79,12 @@ async def _run(args: argparse.Namespace) -> None:
             {"ok": True, "config_hash": config_hash(config), "config": asdict(config)},
             "Config OK\n"
             f"symbol={config.symbol} timeframe={config.timeframe} "
+            f"strategy_timeframe={config.strategy_timeframe} "
             f"db={config.db_path} hash={config_hash(config)}\n"
             f"grid_count={config.grid_count} atr_multiplier={config.atr_multiplier} "
             f"order_size={config.order_size}\n"
             f"recenter_hysteresis_pct={config.recenter_hysteresis_pct} "
+            f"spacing_hysteresis_pct={config.spacing_hysteresis_pct} "
             f"atr_fast_period={config.atr_fast_period} atr_slow_period={config.atr_slow_period}\n"
             f"taker_fee_rate={config.taker_fee_rate} "
             f"simulated_slippage_bps={config.simulated_slippage_bps} "

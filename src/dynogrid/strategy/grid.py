@@ -69,6 +69,22 @@ def update_center_price_with_hysteresis(
     return previous_center, False
 
 
+def update_spacing_with_hysteresis(
+    raw_spacing: float,
+    previous_spacing: float | None,
+    hard_min_spacing: float,
+    spacing_hysteresis_pct: float,
+) -> tuple[float, bool]:
+    if previous_spacing is None:
+        return raw_spacing, True
+    if previous_spacing < hard_min_spacing:
+        return raw_spacing, True
+    threshold = previous_spacing * spacing_hysteresis_pct
+    if abs(raw_spacing - previous_spacing) > threshold:
+        return raw_spacing, True
+    return previous_spacing, False
+
+
 def determine_bias(close_price: float, indicators: IndicatorSnapshot) -> Bias:
     if close_price < indicators.bollinger_lower:
         return Bias.LONG_ONLY
@@ -175,6 +191,7 @@ def build_grid_state(
     current_price: float,
     previous_center: float | None,
     balance: Balance,
+    previous_spacing: float | None = None,
 ) -> tuple[GridState, bool]:
     effective_atr = max(indicators.atr14, indicators.atr_fast, indicators.atr_slow)
     atr_spacing, _ = calculate_spacing(
@@ -185,7 +202,7 @@ def build_grid_state(
     )
     ev_min_spacing = calculate_ev_min_spacing(config, current_price)
     fee_spacing = current_price * config.maker_fee_rate * 2.5
-    spacing = max(atr_spacing, ev_min_spacing, fee_spacing)
+    raw_spacing = max(atr_spacing, ev_min_spacing, fee_spacing)
     fee_barrier_applied = fee_spacing > atr_spacing or ev_min_spacing > atr_spacing
     ev_positive = ev_min_spacing <= current_price * config.max_ev_spacing_pct
     center, recentered = update_center_price_with_hysteresis(
@@ -193,6 +210,12 @@ def build_grid_state(
         previous_center,
         effective_atr,
         config.recenter_hysteresis_pct,
+    )
+    spacing, spacing_changed = update_spacing_with_hysteresis(
+        raw_spacing=raw_spacing,
+        previous_spacing=previous_spacing,
+        hard_min_spacing=max(ev_min_spacing, fee_spacing),
+        spacing_hysteresis_pct=config.spacing_hysteresis_pct,
     )
     trend_state = determine_trend_state(indicators, config.outside_band_consecutive)
     bias = determine_bias_with_mode(current_price, indicators, config.bias_mode, trend_state)
@@ -219,7 +242,7 @@ def build_grid_state(
             ev_positive=ev_positive,
             volatility_ratio=volatility_ratio,
             inventory_ratio=inventory_ratio,
-            grid_recentered=recentered,
+            grid_recentered=recentered or spacing_changed,
             trend_state=trend_state,
             counter_trend_paused=counter_trend_paused,
             inventory_skew_cost_quote=inventory_skew_cost_quote,

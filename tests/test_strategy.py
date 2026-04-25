@@ -12,6 +12,7 @@ from dynogrid.strategy.grid import (
     structural_exit_signal,
     update_center_price,
     update_center_price_with_hysteresis,
+    update_spacing_with_hysteresis,
 )
 from dynogrid.strategy.indicators import calculate_atr, calculate_bollinger
 
@@ -147,6 +148,35 @@ def test_center_hysteresis_requires_atr_and_percent_gates() -> None:
     center, recentered = update_center_price_with_hysteresis(101.2, 100.0, 0.1, 0.01)
     assert center == 101.2
     assert recentered is True
+
+
+def test_spacing_hysteresis_keeps_grid_from_repricing_on_tiny_atr_changes() -> None:
+    spacing, changed = update_spacing_with_hysteresis(
+        raw_spacing=100.5,
+        previous_spacing=100.0,
+        hard_min_spacing=50.0,
+        spacing_hysteresis_pct=0.01,
+    )
+    assert spacing == 100.0
+    assert changed is False
+
+    spacing, changed = update_spacing_with_hysteresis(
+        raw_spacing=102.0,
+        previous_spacing=100.0,
+        hard_min_spacing=50.0,
+        spacing_hysteresis_pct=0.01,
+    )
+    assert spacing == 102.0
+    assert changed is True
+
+    spacing, changed = update_spacing_with_hysteresis(
+        raw_spacing=101.0,
+        previous_spacing=100.0,
+        hard_min_spacing=100.5,
+        spacing_hysteresis_pct=0.01,
+    )
+    assert spacing == 101.0
+    assert changed is True
 
 
 def test_trend_following_bias_and_counter_trend_pause() -> None:

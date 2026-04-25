@@ -36,6 +36,7 @@ def parse_config(raw: dict[str, Any]) -> BotConfig:
     config = BotConfig(
         symbol=str(raw["symbol"]),
         timeframe=str(raw["timeframe"]),
+        strategy_timeframe=str(raw.get("strategy_timeframe", raw["timeframe"])),
         grid_count=int(raw["grid_count"]),
         atr_multiplier=float(raw["atr_multiplier"]),
         order_size=float(raw["order_size"]),
@@ -66,6 +67,7 @@ def parse_config(raw: dict[str, Any]) -> BotConfig:
         structure_break_atr_buffer=float(raw.get("structure_break_atr_buffer", 0.25)),
         inventory_spacing_threshold=float(raw.get("inventory_spacing_threshold", 0.70)),
         inventory_spacing_max_multiplier=float(raw.get("inventory_spacing_max_multiplier", 1.0)),
+        spacing_hysteresis_pct=float(raw.get("spacing_hysteresis_pct", 0.01)),
     )
     validate_config(config)
     return config
@@ -73,7 +75,9 @@ def parse_config(raw: dict[str, Any]) -> BotConfig:
 
 def validate_config(config: BotConfig) -> None:
     if config.timeframe != "1m":
-        raise ValueError("V1 only supports timeframe=1m")
+        raise ValueError("V1 ingestion only supports timeframe=1m")
+    if config.strategy_timeframe not in {"1m", "5m"}:
+        raise ValueError("strategy_timeframe must be 1m or 5m")
     if config.grid_count < 1:
         raise ValueError("grid_count must be >= 1")
     if config.atr_multiplier <= 0:
@@ -116,6 +120,8 @@ def validate_config(config: BotConfig) -> None:
         raise ValueError("inventory_spacing_threshold must be between 0 and 1")
     if config.inventory_spacing_max_multiplier < 0:
         raise ValueError("inventory_spacing_max_multiplier must be >= 0")
+    if config.spacing_hysteresis_pct < 0:
+        raise ValueError("spacing_hysteresis_pct must be >= 0")
 
 
 def config_hash(config: BotConfig) -> str:

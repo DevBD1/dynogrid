@@ -40,6 +40,7 @@ class BotConfig:
     starting_quote: float
     db_path: str
     exchange_id: str = "binance"
+    strategy_timeframe: str = "1m"
     price_precision: int = 2
     quantity_precision: int = 6
     min_price: float = 0.0
@@ -61,6 +62,7 @@ class BotConfig:
     structure_break_atr_buffer: float = 0.25
     inventory_spacing_threshold: float = 0.70
     inventory_spacing_max_multiplier: float = 1.0
+    spacing_hysteresis_pct: float = 0.01
 
 
 @dataclass(frozen=True)

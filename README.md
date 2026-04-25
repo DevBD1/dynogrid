@@ -1,18 +1,20 @@
 # DynoGrid
 
-DynoGrid is a dynamic grid algorithmic trading bot designed to profit from Bitcoin's volatility using adaptive price levels. Unlike traditional static grid bots, DynoGrid recalculates its grid parameters every minute based on real-time market volatility and trend indicators.
+DynoGrid is a dynamic grid algorithmic trading bot designed to profit from Bitcoin's volatility using adaptive price levels. Unlike traditional static grid bots, DynoGrid ingests 1m candles for paper fills and can recalculate grid parameters on a slower strategy timeframe such as 5m.
 
 ## Core Strategy
 
-### 1-Minute Heartbeat
-The bot operates on a strict 1-minute cycle:
+### 1-Minute Ingestion, Tunable Strategy Cadence
+The bot operates on a 1-minute ingestion cycle:
 1.  **Ingestion**: Fetch 1m OHLCV data.
-2.  **Analysis**: Calculate ATR (14) and Bollinger Bands (20, 2).
-3.  **Adaptive Spacing**: Set grid width as a multiple of ATR (\$S = ATR \times k\$).
-4.  **EV Gate**: Widen or pause if round-trip expected value cannot cover fees and simulated slippage.
-5.  **Trend Filter**: Adjust grid bias with Bollinger Bands plus EMA momentum confirmation.
-6.  **Re-centering**: Shift the grid center only if both ATR and percent hysteresis gates pass.
-7.  **Sync**: Update exchange limit orders to match the new grid.
+2.  **Fill Checks**: Simulate paper fills from each 1m candle high/low.
+3.  **Aggregation**: Build strategy candles from `strategy_timeframe` (`1m` or `5m`).
+4.  **Analysis**: Calculate ATR (14) and Bollinger Bands (20, 2).
+5.  **Adaptive Spacing**: Set grid width as a multiple of ATR (\$S = ATR \times k\$).
+6.  **EV Gate**: Widen or pause if round-trip expected value cannot cover fees and simulated slippage.
+7.  **Trend Filter**: Adjust grid bias with Bollinger Bands plus EMA momentum confirmation.
+8.  **Re-centering**: Shift the grid center only if both ATR and percent hysteresis gates pass.
+9.  **Sync**: Update exchange limit orders only when a new strategy candle is ready.
 
 ### Key Features
 - **Volatility-Aware**: Automatically widens the grid during spikes to reduce risk and narrows it during consolidation to maximize fill frequency.
@@ -137,7 +139,9 @@ Tune experiments in `config.yaml`:
 grid_count: 3
 atr_multiplier: 1.2
 order_size: 0.001
+strategy_timeframe: 5m
 recenter_hysteresis_pct: 0.001
+spacing_hysteresis_pct: 0.01
 atr_fast_period: 7
 atr_slow_period: 28
 taker_fee_rate: 0.001

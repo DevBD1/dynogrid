@@ -12,9 +12,10 @@ from dynogrid.market_data import (
     CcxtClosedCandleSource,
     CsvMarketDataSource,
     MarketDataSource,
+    aggregate_candles,
     load_candles_csv,
 )
-from dynogrid.models import BotConfig, Candle, Order, OrderStatus
+from dynogrid.models import BotConfig, Candle, Fill, Order, OrderStatus
 from dynogrid.persistence.sqlite import SQLiteRepository
 from dynogrid.strategy.grid import (
     build_grid_state,
@@ -46,7 +47,10 @@ class DynoGridEngine:
         self.market_data = market_data
         self.run_id = run_id
         self._candles: list[Candle] = list(initial_candles or [])
+        self._strategy_candles: list[Candle] = []
+        self._last_strategy_timestamp: int | None = None
         self._previous_center: float | None = None
+        self._previous_spacing: float | None = None
         self._starting_equity: float | None = None
         self._stop_event_written = False
         self._ev_event_written = False
@@ -79,7 +83,26 @@ class DynoGridEngine:
 
                 await self._handle_flatten_if_requested(candle)
 
-                if len(self._candles) < 20:
+                fills = await self._process_fills_for_candle(candle)
+                if await self._handle_intrabar_stop_loss(config, candle):
+                    completed += 1
+                    return
+                strategy_candle = self._next_strategy_candle(config)
+                if strategy_candle is None:
+                    balance = await self.gateway.balance()
+                    await self.repository.persist_balance(
+                        self.run_id, candle.timestamp, balance, mark_equity(balance, candle.close)
+                    )
+                    completed += 1
+                    self._report(
+                        f"cycle={completed} candle={candle.timestamp} close={candle.close:.2f} "
+                        f"fills={len(fills)} strategy_wait={config.strategy_timeframe} "
+                        f"equity={mark_equity(balance, candle.close):.2f}"
+                    )
+                    await self._maybe_sleep(config.loop_interval_seconds, sleep)
+                    continue
+
+                if len(self._strategy_candles) < 20:
                     balance = await self.gateway.balance()
                     await self.repository.persist_balance(
                         self.run_id, candle.timestamp, balance, mark_equity(balance, candle.close)
@@ -88,18 +111,23 @@ class DynoGridEngine:
                         self.run_id,
                         "warmup",
                         "waiting for enough candles to calculate indicators",
-                        {"candles": len(self._candles)},
+                        {
+                            "candles": len(self._strategy_candles),
+                            "strategy_timeframe": config.strategy_timeframe,
+                        },
                     )
                     completed += 1
                     self._report(
                         f"cycle={completed} candle={candle.timestamp} close={candle.close:.2f} "
-                        f"warmup={len(self._candles)}/20 equity={mark_equity(balance, candle.close):.2f}"
+                        f"warmup={len(self._strategy_candles)}/20 "
+                        f"strategy_timeframe={config.strategy_timeframe} fills={len(fills)} "
+                        f"equity={mark_equity(balance, candle.close):.2f}"
                     )
                     await self._maybe_sleep(config.loop_interval_seconds, sleep)
                     continue
 
                 indicators = calculate_indicators(
-                    self._candles,
+                    self._strategy_candles,
                     atr_fast_period=config.atr_fast_period,
                     atr_slow_period=config.atr_slow_period,
                     ema_fast_period=config.ema_fast_period,
@@ -109,15 +137,19 @@ class DynoGridEngine:
                 grid, fee_barrier_applied = build_grid_state(
                     config=config,
                     indicators=indicators,
-                    current_price=candle.close,
+                    current_price=strategy_candle.close,
                     previous_center=self._previous_center,
                     balance=balance,
+                    previous_spacing=self._previous_spacing,
                 )
                 self._previous_center = grid.center_price
+                self._previous_spacing = grid.spacing
 
                 paused = await self.repository.runtime_state("paused", "0") == "1"
-                exit_signal = structural_exit_signal(config, self._candles, indicators, balance)
-                equity = mark_equity(balance, candle.close)
+                exit_signal = structural_exit_signal(
+                    config, self._strategy_candles, indicators, balance
+                )
+                equity = mark_equity(balance, strategy_candle.close)
                 if self._starting_equity is not None and equity < self._starting_equity * (
                     1.0 - config.stop_loss_pct
                 ):
@@ -125,7 +157,7 @@ class DynoGridEngine:
                 risk = compute_risk_state(
                     config=config,
                     balance=balance,
-                    current_price=candle.close,
+                    current_price=strategy_candle.close,
                     starting_equity=self._starting_equity,
                     paused=paused,
                     fee_barrier_applied=fee_barrier_applied,
@@ -148,7 +180,7 @@ class DynoGridEngine:
                         "EV minimum spacing exceeds configured cap; entries paused",
                         {
                             "ev_min_spacing": grid.ev_min_spacing,
-                            "max_spacing": candle.close * config.max_ev_spacing_pct,
+                            "max_spacing": strategy_candle.close * config.max_ev_spacing_pct,
                         },
                     )
                     self._ev_event_written = True
@@ -177,23 +209,6 @@ class DynoGridEngine:
                     else:
                         await self.repository.persist_order(self.run_id, created)
 
-                fills = await self.gateway.process_candle(candle)
-                for fill in fills:
-                    await self.repository.persist_fill(self.run_id, fill)
-                    await self.repository.persist_order(
-                        self.run_id,
-                        Order(
-                            client_order_id=fill.client_order_id,
-                            exchange_order_id=f"paper-{fill.client_order_id}",
-                            side=fill.side,
-                            price=fill.price,
-                            quantity=fill.quantity,
-                            status=OrderStatus.FILLED,
-                            created_at=fill.timestamp,
-                            updated_at=fill.timestamp,
-                        ),
-                    )
-
                 if exit_signal:
                     await self._cancel_all_and_flatten(candle, exit_signal)
 
@@ -202,7 +217,7 @@ class DynoGridEngine:
                 await self.repository.persist_snapshot(
                     run_id=self.run_id,
                     config_hash_value=config_hash_value,
-                    candle=candle,
+                    candle=strategy_candle,
                     indicators=indicators,
                     grid=grid,
                     risk=risk,
@@ -210,7 +225,7 @@ class DynoGridEngine:
                 )
                 await self.repository.persist_strategy_metrics(
                     run_id=self.run_id,
-                    timestamp=candle.timestamp,
+                    timestamp=strategy_candle.timestamp,
                     grid=grid,
                     exit_signal=exit_signal,
                 )
@@ -223,7 +238,8 @@ class DynoGridEngine:
 
                 completed += 1
                 self._report(
-                    f"cycle={completed} candle={candle.timestamp} close={candle.close:.2f} "
+                    f"cycle={completed} candle={candle.timestamp} strategy_candle={strategy_candle.timestamp} "
+                    f"close={strategy_candle.close:.2f} "
                     f"bias={grid.bias.value} center={grid.center_price:.2f} "
                     f"spacing={grid.spacing:.2f} desired={len(desired)} "
                     f"created={len(plan.create_orders)} canceled={len(plan.cancel_order_ids)} "
@@ -268,6 +284,49 @@ class DynoGridEngine:
             {"price": candle.close, "filled": fill is not None},
         )
 
+    async def _process_fills_for_candle(self, candle: Candle) -> list[Fill]:
+        fills = await self.gateway.process_candle(candle)
+        for fill in fills:
+            await self.repository.persist_fill(self.run_id, fill)
+            await self.repository.persist_order(
+                self.run_id,
+                Order(
+                    client_order_id=fill.client_order_id,
+                    exchange_order_id=f"paper-{fill.client_order_id}",
+                    side=fill.side,
+                    price=fill.price,
+                    quantity=fill.quantity,
+                    status=OrderStatus.FILLED,
+                    created_at=fill.timestamp,
+                    updated_at=fill.timestamp,
+                ),
+            )
+        return fills
+
+    async def _handle_intrabar_stop_loss(self, config: BotConfig, candle: Candle) -> bool:
+        if self._starting_equity is None:
+            return False
+        balance = await self.gateway.balance()
+        equity = mark_equity(balance, candle.close)
+        if equity >= self._starting_equity * (1.0 - config.stop_loss_pct):
+            return False
+        if not self._stop_event_written:
+            await self.repository.event(
+                self.run_id,
+                "paper_stop_loss",
+                "paper stop loss threshold breached",
+                {"equity": equity, "candle_timeframe": config.timeframe},
+            )
+            self._stop_event_written = True
+        await self._cancel_all_and_flatten(candle, "paper_stop_loss")
+        balance = await self.gateway.balance()
+        await self.repository.persist_balance(
+            self.run_id, candle.timestamp, balance, mark_equity(balance, candle.close)
+        )
+        await self.repository.finish_run(self.run_id, "stopped")
+        self._report(f"run {self.run_id} stopped by paper_stop_loss")
+        return True
+
     async def _cancel_all_and_flatten(self, candle: Candle, reason: str) -> None:
         for order in await self.gateway.open_orders():
             canceled = await self.gateway.cancel_order(order.client_order_id, candle.timestamp)
@@ -304,6 +363,23 @@ class DynoGridEngine:
     def _report(self, message: str) -> None:
         if self._reporter is not None:
             self._reporter(message)
+
+    def _next_strategy_candle(self, config: BotConfig) -> Candle | None:
+        aggregated = aggregate_candles(self._candles, config.strategy_timeframe)
+        if not aggregated:
+            return None
+        if self._last_strategy_timestamp is None:
+            self._strategy_candles = aggregated
+            self._last_strategy_timestamp = aggregated[-1].timestamp
+            return aggregated[-1]
+        new_candles = [
+            candle for candle in aggregated if candle.timestamp > self._last_strategy_timestamp
+        ]
+        if not new_candles:
+            return None
+        self._strategy_candles.extend(new_candles)
+        self._last_strategy_timestamp = new_candles[-1].timestamp
+        return new_candles[-1]
 
 
 async def run_historical(

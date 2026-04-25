@@ -113,6 +113,35 @@ def load_candles_csv(path: str | Path) -> list[Candle]:
     return candles
 
 
+def aggregate_candles(candles: list[Candle], timeframe: str) -> list[Candle]:
+    if timeframe == "1m":
+        return list(candles)
+    factor = _timeframe_factor(timeframe)
+    by_bucket: dict[int, list[Candle]] = {}
+    for candle in candles:
+        bucket = candle.timestamp - candle.timestamp % (factor * 60)
+        by_bucket.setdefault(bucket, []).append(candle)
+
+    aggregated: list[Candle] = []
+    for bucket, bucket_candles in sorted(by_bucket.items()):
+        ordered = sorted(bucket_candles, key=lambda candle: candle.timestamp)
+        expected = [bucket + index * 60 for index in range(factor)]
+        actual = [candle.timestamp for candle in ordered]
+        if actual != expected:
+            continue
+        aggregated.append(
+            Candle(
+                timestamp=bucket,
+                open=ordered[0].open,
+                high=max(candle.high for candle in ordered),
+                low=min(candle.low for candle in ordered),
+                close=ordered[-1].close,
+                volume=sum(candle.volume for candle in ordered),
+            )
+        )
+    return aggregated
+
+
 def _to_candle(row: list[float]) -> Candle:
     return Candle(
         timestamp=int(row[0] // 1000),
@@ -128,3 +157,11 @@ def _timeframe_ms(timeframe: str) -> int:
     if timeframe != "1m":
         raise ValueError("V1 live paper mode only supports timeframe=1m")
     return 60_000
+
+
+def _timeframe_factor(timeframe: str) -> int:
+    if timeframe == "1m":
+        return 1
+    if timeframe == "5m":
+        return 5
+    raise ValueError("strategy_timeframe must be 1m or 5m")

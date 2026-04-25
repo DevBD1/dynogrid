@@ -14,6 +14,7 @@ from dynogrid.cli import build_parser
 from dynogrid.config import load_config
 from dynogrid.engine import DynoGridEngine
 from dynogrid.exchange.paper import PaperExchangeGateway
+from dynogrid.market_data import aggregate_candles
 from dynogrid.models import Balance, Bias, Candle, Fill, GridState, Order, OrderStatus, Side
 from dynogrid.persistence.sqlite import SQLiteRepository
 
@@ -44,6 +45,13 @@ class ListMarketDataSource:
         self.closed = True
 
 
+def minute_candles(count: int, start: int = 1700000000, close: float = 100.0) -> list[Candle]:
+    return [
+        Candle(start + index * 60, close, close + 1.0, close - 1.0, close, 1.0)
+        for index in range(count)
+    ]
+
+
 def write_config(tmp_path: Path) -> Path:
     config_path = tmp_path / "config.yaml"
     payload = {
@@ -66,6 +74,22 @@ def write_config(tmp_path: Path) -> Path:
     }
     config_path.write_text(yaml.safe_dump(payload))
     return config_path
+
+
+def test_aggregate_candles_builds_complete_5m_bars_only() -> None:
+    sample = [
+        Candle(0, 100.0, 101.0, 99.0, 100.5, 1.0),
+        Candle(60, 100.5, 102.0, 100.0, 101.0, 2.0),
+        Candle(120, 101.0, 103.0, 100.5, 102.0, 3.0),
+        Candle(180, 102.0, 104.0, 101.5, 103.0, 4.0),
+        Candle(240, 103.0, 105.0, 102.5, 104.0, 5.0),
+        Candle(300, 104.0, 106.0, 103.5, 105.0, 6.0),
+    ]
+
+    aggregated = aggregate_candles(sample, "5m")
+
+    assert len(aggregated) == 1
+    assert aggregated[0] == Candle(0, 100.0, 105.0, 99.0, 104.0, 15.0)
 
 
 @pytest.mark.asyncio
@@ -223,6 +247,88 @@ async def test_engine_stop_loss_auto_flattens_and_stops_run(tmp_path: Path) -> N
     assert any(event["event_type"] == "paper_stop_loss" for event in events)
 
 
+@pytest.mark.asyncio
+async def test_engine_processes_existing_order_fills_before_repricing_grid(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path)
+    payload = yaml.safe_load(config_path.read_text())
+    payload["grid_count"] = 1
+    payload["order_size"] = 0.1
+    payload["max_inventory"] = 0.1
+    payload["maker_fee_rate"] = 0.001
+    payload["price_precision"] = 2
+    payload["quantity_precision"] = 4
+    config_path.write_text(yaml.safe_dump(payload))
+    config = load_config(config_path)
+    repo = SQLiteRepository(config.db_path)
+    await repo.init()
+    run_id = await repo.create_run("live-paper", config)
+    initial = [
+        Candle(1700000000 + index * 60, 100.0, 101.0, 99.0, 100.0, 1.0)
+        for index in range(20)
+    ]
+    market_data = ListMarketDataSource(
+        [
+            Candle(1700001200, 100.0, 101.0, 99.0, 100.0, 1.0),
+            Candle(1700001260, 100.0, 106.0, 98.0, 106.0, 1.0),
+        ]
+    )
+    engine = DynoGridEngine(
+        config_path=config_path,
+        repository=repo,
+        gateway=PaperExchangeGateway(config),
+        market_data=market_data,
+        run_id=run_id,
+        initial_candles=initial,
+    )
+
+    await engine.run(max_cycles=2)
+    fills = await repo.list_fills(run_id, 10)
+
+    assert fills
+    assert fills[0]["price"] == 98.0
+
+
+@pytest.mark.asyncio
+async def test_engine_uses_5m_strategy_cadence_with_1m_fill_candles(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path)
+    payload = yaml.safe_load(config_path.read_text())
+    payload["strategy_timeframe"] = "5m"
+    payload["grid_count"] = 1
+    payload["order_size"] = 0.1
+    payload["max_inventory"] = 0.1
+    payload["price_precision"] = 2
+    payload["quantity_precision"] = 4
+    config_path.write_text(yaml.safe_dump(payload))
+    config = load_config(config_path)
+    repo = SQLiteRepository(config.db_path)
+    await repo.init()
+    run_id = await repo.create_run("live-paper", config)
+    market_data = ListMarketDataSource(minute_candles(6, start=6000, close=100.0))
+    engine = DynoGridEngine(
+        config_path=config_path,
+        repository=repo,
+        gateway=PaperExchangeGateway(config),
+        market_data=market_data,
+        run_id=run_id,
+        initial_candles=minute_candles(100, start=0, close=100.0),
+    )
+
+    await engine.run(max_cycles=6)
+
+    with sqlite3.connect(config.db_path) as db:
+        snapshots = db.execute(
+            "SELECT timestamp FROM strategy_snapshots WHERE run_id = ? ORDER BY timestamp",
+            (run_id,),
+        ).fetchall()
+        balances = db.execute(
+            "SELECT COUNT(*) FROM balances WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()[0]
+
+    assert [row[0] for row in snapshots] == [5700, 6000]
+    assert balances == 6
+
+
 def test_cli_parser_accepts_watch_refresh() -> None:
     args = build_parser().parse_args(
         ["--config", "config.yaml", "run-live-paper", "--watch", "--refresh", "2"]
@@ -244,7 +350,9 @@ def test_cli_config_check_and_backtest_smoke(tmp_path: Path) -> None:
         text=True,
     )
     assert "Config OK" in config_check.stdout
+    assert "strategy_timeframe=1m" in config_check.stdout
     assert "recenter_hysteresis_pct" in config_check.stdout
+    assert "spacing_hysteresis_pct" in config_check.stdout
 
     backtest = subprocess.run(
         [
