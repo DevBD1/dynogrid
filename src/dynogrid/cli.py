@@ -86,6 +86,7 @@ async def _run(args: argparse.Namespace) -> None:
             f"recenter_hysteresis_pct={config.recenter_hysteresis_pct} "
             f"spacing_hysteresis_pct={config.spacing_hysteresis_pct} "
             f"atr_fast_period={config.atr_fast_period} atr_slow_period={config.atr_slow_period}\n"
+            "paper_ev_mode=maker_only_roundtrip "
             f"taker_fee_rate={config.taker_fee_rate} "
             f"simulated_slippage_bps={config.simulated_slippage_bps} "
             f"ev_safety_multiplier={config.ev_safety_multiplier} "

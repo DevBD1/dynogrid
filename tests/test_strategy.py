@@ -118,7 +118,21 @@ def test_dual_atr_and_ev_spacing_drive_effective_spacing() -> None:
 
     assert grid.effective_atr == 4.0
     assert grid.spacing == 4.0
-    assert round(calculate_ev_min_spacing(cfg, 100.0), 4) == 0.242
+    assert round(calculate_ev_min_spacing(cfg, 100.0), 4) == 0.11
+
+
+def test_ev_spacing_uses_maker_only_roundtrip_divided_by_two() -> None:
+    cfg = BotConfig(
+        **{
+            **config().__dict__,
+            "maker_fee_rate": 0.001,
+            "taker_fee_rate": 0.01,
+            "simulated_slippage_bps": 50.0,
+            "ev_safety_multiplier": 1.10,
+        }
+    )
+
+    assert round(calculate_ev_min_spacing(cfg, 77_800.0), 2) == 85.58
 
 
 def test_ev_pause_when_spacing_cap_is_exceeded() -> None:
@@ -138,6 +152,24 @@ def test_ev_pause_when_spacing_cap_is_exceeded() -> None:
     assert grid.ev_positive is False
     assert risk.buys_enabled is False
     assert risk.reason == "negative ev spacing cap"
+
+
+def test_hard_fee_barrier_still_applies_when_ev_spacing_is_lower() -> None:
+    cfg = config()
+    indicators = IndicatorSnapshot(
+        atr14=0.01,
+        atr_fast=0.01,
+        atr_slow=0.01,
+        bollinger_mid=100.0,
+        bollinger_upper=120.0,
+        bollinger_lower=80.0,
+    )
+
+    grid, fee_barrier = build_grid_state(cfg, indicators, 100.0, None, Balance(0.0, 1000.0))
+
+    assert grid.ev_min_spacing == 0.11000000000000001
+    assert grid.spacing == 0.25
+    assert fee_barrier is True
 
 
 def test_center_hysteresis_requires_atr_and_percent_gates() -> None:

@@ -11,7 +11,7 @@ The bot operates on a 1-minute ingestion cycle:
 3.  **Aggregation**: Build strategy candles from `strategy_timeframe` (`1m` or `5m`).
 4.  **Analysis**: Calculate ATR (14) and Bollinger Bands (20, 2).
 5.  **Adaptive Spacing**: Set grid width as a multiple of ATR (\$S = ATR \times k\$).
-6.  **EV Gate**: Widen or pause if round-trip expected value cannot cover fees and simulated slippage.
+6.  **EV Gate**: Widen or pause if round-trip expected value cannot cover maker fees in paper mode.
 7.  **Trend Filter**: Adjust grid bias with Bollinger Bands plus EMA momentum confirmation.
 8.  **Re-centering**: Shift the grid center only if both ATR and percent hysteresis gates pass.
 9.  **Sync**: Update exchange limit orders only when a new strategy candle is ready.
@@ -154,6 +154,15 @@ ema_slow_period: 21
 outside_band_consecutive: 3
 inventory_spacing_threshold: 0.70
 ```
+
+Paper EV spacing uses maker-only round-trip math because paper orders are post-only maker limits:
+
+```text
+ev_min_spacing = price * maker_fee_rate * ev_safety_multiplier
+spacing = max(atr_spacing, ev_min_spacing, price * maker_fee_rate * 2.5)
+```
+
+To tighten the grid, tune `atr_multiplier`, `ev_safety_multiplier`, or `maker_fee_rate`. Do not remove the fee barrier.
 
 Then run the bot and compare results:
 

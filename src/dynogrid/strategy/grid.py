@@ -23,9 +23,8 @@ def calculate_spacing(
 
 
 def calculate_ev_min_spacing(config: BotConfig, current_price: float) -> float:
-    slippage_rate = config.simulated_slippage_bps / 10_000.0
-    fee_rate = max(config.maker_fee_rate, config.taker_fee_rate)
-    return current_price * (2.0 * fee_rate + 2.0 * slippage_rate) * config.ev_safety_multiplier
+    ev_min_roundtrip = current_price * (2.0 * config.maker_fee_rate) * config.ev_safety_multiplier
+    return ev_min_roundtrip / 2.0
 
 
 def calculate_inventory_ratio(balance: Balance, max_inventory: float) -> float:

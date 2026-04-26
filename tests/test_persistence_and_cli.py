@@ -353,6 +353,7 @@ def test_cli_config_check_and_backtest_smoke(tmp_path: Path) -> None:
     assert "strategy_timeframe=1m" in config_check.stdout
     assert "recenter_hysteresis_pct" in config_check.stdout
     assert "spacing_hysteresis_pct" in config_check.stdout
+    assert "paper_ev_mode=maker_only_roundtrip" in config_check.stdout
 
     backtest = subprocess.run(
         [

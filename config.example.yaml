@@ -19,13 +19,13 @@ order_size: 0.001
 max_inventory: 0.01
 # Maker fee rate used for paper fills and spacing checks.
 maker_fee_rate: 0.001
-# Taker fee rate used for EV safety validation.
+# Taker fee rate kept for future live safety checks; paper EV spacing uses maker-only.
 taker_fee_rate: 0.001
 # Equity drawdown limit; breach triggers paper auto-flatten and stops the run.
 stop_loss_pct: 0.10
-# Simulated slippage per fill in basis points for EV validation.
+# Simulated slippage kept for future live safety checks; paper EV spacing uses maker-only.
 simulated_slippage_bps: 1.0
-# Extra safety multiplier applied to minimum EV-positive spacing.
+# Extra safety multiplier applied to maker-only round-trip paper EV spacing.
 ev_safety_multiplier: 1.10
 # Maximum allowed EV minimum spacing as a percent of price before pausing entries.
 max_ev_spacing_pct: 0.02
